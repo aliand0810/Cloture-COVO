@@ -1,6 +1,27 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
+<script>
+(function(){
+    if (window._cpReadOnlyGuardInstalled) return;
+    window._cpReadOnlyGuardInstalled = true;
+    var _cpOrigSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function(key, value) {
+        if (this === window.localStorage && key !== 'covo_current_user') {
+            try {
+                var cu = JSON.parse(window.localStorage.getItem('covo_current_user') || 'null');
+                if (cu && cu.readOnly === true) {
+                    if (typeof window.showScanToast === 'function') {
+                        window.showScanToast('👁️ Mode consultation seule — sauvegarde désactivée par l\'Admin-Développeur', 'info');
+                    }
+                    return;
+                }
+            } catch(e) {}
+        }
+        return _cpOrigSetItem.apply(this, arguments);
+    };
+})();
+</script>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
 <title>Clôtures Pro — COVO</title>
@@ -444,7 +465,7 @@ function cpRefreshUserBadge() {
     var badge = document.getElementById('cp-user-badge');
     var banner = document.getElementById('cp-login-banner');
     if (currentUser) {
-        badge.textContent = '👤 ' + (currentUser.name || currentUser.username || currentUser.id) + (cpIsAdmin() ? ' · admin' : '');
+        badge.textContent = '👤 ' + (currentUser.name || currentUser.username || currentUser.id) + (cpIsAdmin() ? ' · admin' : '') + (currentUser.readOnly ? ' · 👁️ lecture seule' : '');
         banner.style.display = 'none';
     } else {
         badge.textContent = '👤 Non connecté';
