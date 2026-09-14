@@ -69,6 +69,13 @@
 </head>
 <body>
 
+<div id="cp-access-gate" style="display:none;position:fixed;inset:0;z-index:100000;background:#0a0a0a;color:#fff;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:24px;gap:16px;">
+    <div style="font-size:3rem;">🔒</div>
+    <div id="cp-access-gate-title" style="font-size:1.2rem;font-weight:900;"></div>
+    <div id="cp-access-gate-msg" style="font-size:0.9rem;color:#ccc;max-width:420px;line-height:1.5;"></div>
+    <a id="cp-access-gate-link" href="https://aliand0810.github.io/Covo-pro/" target="covopro" style="display:none;text-decoration:none;background:linear-gradient(135deg,#1a3a5c,#102339);color:#fff;padding:10px 22px;border-radius:9px;font-weight:800;font-size:0.9rem;">🔑 Se connecter dans COVO Pro</a>
+</div>
+
 <div id="cp-topbar">
     <a class="cp-back" href="https://aliand0810.github.io/Covo-pro/" target="covopro">← COVO Pro</a>
     <div class="cp-title">🗓️ Clôtures Pro<small>Module Clôtures de poste — données partagées avec COVO Pro</small></div>
@@ -402,6 +409,36 @@ function cpIsAdmin() {
     return !!(u && (u.role === 'admin' || u.isMaster || u.id === 'USR-MASTER'));
 }
 
+function cpShowAccessGate(title, msg, showLink){
+    var gate = document.getElementById('cp-access-gate');
+    if (!gate) return;
+    var t = document.getElementById('cp-access-gate-title'); if (t) t.textContent = title;
+    var m = document.getElementById('cp-access-gate-msg'); if (m) m.textContent = msg;
+    var link = document.getElementById('cp-access-gate-link'); if (link) link.style.display = showLink ? 'inline-block' : 'none';
+    gate.style.display = 'flex';
+    document.body.style.overflow = 'hidden';
+}
+function cpHideAccessGate(){
+    var gate = document.getElementById('cp-access-gate');
+    if (!gate) return;
+    gate.style.display = 'none';
+    document.body.style.overflow = '';
+}
+function cpCheckAccess(){
+    if (cpIsAdmin()) { cpHideAccessGate(); return true; }
+    if (!currentUser) {
+        cpShowAccessGate('🔒 Connexion requise', "Connectez-vous dans COVO Pro avant d'utiliser Clôtures Pro.", true);
+        return false;
+    }
+    var vis = (currentUser.permissions && currentUser.permissions.tabVisibility) || {};
+    if (vis.clotures === false) {
+        cpShowAccessGate('⛔ Accès non autorisé', "Vous n'avez pas la permission d'accéder à Clôtures Pro. Contactez un administrateur.", false);
+        return false;
+    }
+    cpHideAccessGate();
+    return true;
+}
+
 function cpRefreshUserBadge() {
     currentUser = _covoCurrentUser();
     var badge = document.getElementById('cp-user-badge');
@@ -414,6 +451,7 @@ function cpRefreshUserBadge() {
         banner.style.display = '';
     }
     document.querySelectorAll('.cp-admin-only').forEach(function(el){ el.style.display = cpIsAdmin() ? '' : 'none'; });
+    cpCheckAccess();
 }
 
 function cpToggleDark() {
