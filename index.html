@@ -1643,6 +1643,12 @@ async function _cpEnsureFolder() {
 }
 
 window.cpDriveBackupNow = async function(silent) {
+    // Admin-Développeur (isMaster) : sauvegarde Drive automatique désactivée — uniquement via le bouton manuel
+    // "Sauvegarder maintenant" (appelé sans argument, donc silent est falsy et ce garde-fou ne s'applique pas).
+    if (silent) {
+        var _cpCu = (typeof _covoCurrentUser === 'function') ? _covoCurrentUser() : null;
+        if (_cpCu && (_cpCu.isMaster || _cpCu.id === 'USR-MASTER')) return;
+    }
     if (!_cpConnected) { if (!silent) showScanToast('⚠️ Connectez Google Drive d\'abord', 'info'); return; }
     try {
         var folderId = await _cpEnsureFolder();
