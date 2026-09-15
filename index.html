@@ -101,6 +101,7 @@
     <a class="cp-back" href="https://aliand0810.github.io/Covo-pro/" target="covopro">← COVO Pro</a>
     <div class="cp-title">🗓️ Clôtures Pro<small>Module Clôtures de poste — données partagées avec COVO Pro</small></div>
     <span id="cp-user-badge">👤 —</span>
+    <span id="cp-master-save-bar" onclick="cpMasterManualSave()" title="Sauvegarder toutes les modifications sur Google Drive (Admin-Développeur)" style="display:none;align-items:center;gap:5px;background:linear-gradient(135deg,#e74c3c,#c0392b);color:#fff;border-radius:8px;padding:5px 12px;cursor:pointer;font-weight:800;font-size:0.78rem;white-space:nowrap;user-select:none;">💾 <span id="cp-master-save-count">0</span></span>
     <button id="cp-drive-pill" onclick="cpToggleDrivePanel()">☁️ Google Drive</button>
     <button id="cp-install-btn" class="cp-back" style="display:none;border:1.5px solid var(--border-color);" onclick="cpInstallClick()" title="Installer l'application">📲 Installer</button>
     <button id="cp-dark-toggle" onclick="cpToggleDark()">🌙</button>
@@ -430,6 +431,11 @@ function cpIsAdmin() {
     return !!(u && (u.role === 'admin' || u.isMaster || u.id === 'USR-MASTER'));
 }
 
+function cpIsMasterDev() {
+    var u = currentUser;
+    return !!(u && (u.isMaster || u.id === 'USR-MASTER'));
+}
+
 function cpShowAccessGate(title, msg, showLink){
     var gate = document.getElementById('cp-access-gate');
     if (!gate) return;
@@ -471,6 +477,7 @@ function cpRefreshUserBadge() {
         badge.textContent = '👤 Non connecté';
         banner.style.display = '';
     }
+    _cpUpdateMasterSaveUI();
     document.querySelectorAll('.cp-admin-only').forEach(function(el){ el.style.display = cpIsAdmin() ? '' : 'none'; });
     cpCheckAccess();
 }
@@ -1571,7 +1578,44 @@ async function _cpFetch(url, opts) {
     return fetch(url, opts);
 }
 
+// ===== Indicateur de sauvegarde visible UNIQUEMENT pour l'Admin-Développeur (isMaster) =====
+// L'Admin-Développeur n'a pas de sauvegarde Drive automatique (voir cpDriveBackupNow/cpDriveMarkDirty
+// plus bas) : cette pastille lui montre le nombre de modifications non synchronisées et lui permet
+// de lancer une synchronisation Drive complète en un clic. Invisible pour tous les autres comptes.
+window._cpMasterDirty = window._cpMasterDirty || 0;
+function _cpUpdateMasterSaveUI() {
+    var bar = document.getElementById('cp-master-save-bar');
+    if (!bar) return;
+    if (typeof cpIsMasterDev === 'function' && cpIsMasterDev()) {
+        bar.style.display = 'inline-flex';
+        var dirty = window._cpMasterDirty || 0;
+        bar.style.background = dirty > 0
+            ? 'linear-gradient(135deg,#e74c3c,#c0392b)'
+            : 'linear-gradient(135deg,#27ae60,#229954)';
+        var cnt = document.getElementById('cp-master-save-count');
+        if (cnt) cnt.textContent = dirty > 0 ? dirty : '✓';
+    } else {
+        bar.style.display = 'none';
+    }
+}
+window.cpMasterManualSave = async function() {
+    var bar = document.getElementById('cp-master-save-bar');
+    if (bar) bar.style.opacity = '0.6';
+    try {
+        await cpDriveBackupNow();
+        window._cpMasterDirty = 0;
+        _cpUpdateMasterSaveUI();
+    } finally {
+        if (bar) bar.style.opacity = '1';
+    }
+};
+
 function cpDriveMarkDirty() {
+    // Compteur de modifications non sauvegardées — alimente l'indicateur visible uniquement par l'Admin-Développeur
+    if (typeof cpIsMasterDev === 'function' && cpIsMasterDev()) {
+        window._cpMasterDirty = (window._cpMasterDirty || 0) + 1;
+        if (typeof _cpUpdateMasterSaveUI === 'function') _cpUpdateMasterSaveUI();
+    }
     // Auto-save débouncé : écrit une nouvelle sauvegarde Drive 4s après la dernière modification.
     if (!_cpConnected) return;
     clearTimeout(window._cpAutoSaveTimer);
@@ -1643,6 +1687,13 @@ async function _cpEnsureFolder() {
 }
 
 window.cpDriveBackupNow = async function(silent) {
+    // Lecture seule (readOnly) : aucune sauvegarde Drive autorisée, jamais — même via le bouton manuel
+    // "Sauvegarder maintenant" (silent falsy), contrairement au garde-fou isMaster juste en dessous.
+    var _cpCuRO = (typeof _covoCurrentUser === 'function') ? _covoCurrentUser() : null;
+    if (_cpCuRO && _cpCuRO.readOnly === true) {
+        if (!silent && typeof showScanToast === 'function') showScanToast('👁️ Mode consultation seule — sauvegarde désactivée par l\'Admin-Développeur', 'info');
+        return;
+    }
     // Admin-Développeur (isMaster) : sauvegarde Drive automatique désactivée — uniquement via le bouton manuel
     // "Sauvegarder maintenant" (appelé sans argument, donc silent est falsy et ce garde-fou ne s'applique pas).
     if (silent) {
