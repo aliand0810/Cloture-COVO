@@ -1809,14 +1809,20 @@ function _cpApplyRestore(data) {
     window._cpDeferredPrompt = null;
     var btn = document.getElementById('cp-install-btn');
     var isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
-    if (btn && !isStandalone) btn.style.display = '';
+    var _cpWasInstalled = false;
+    try { _cpWasInstalled = localStorage.getItem('covo_pwa_installed_cloturespro') === '1'; } catch(e) {}
+    if (isStandalone) { try { localStorage.setItem('covo_pwa_installed_cloturespro', '1'); } catch(e) {} }
+    // Application déjà installée sur le bureau (détectée cette session en mode standalone, ou lors
+    // d'une session précédente via l'évènement "appinstalled" ci-dessous) : ne jamais réafficher le
+    // bouton/icône "Installer", même si l'app est ouverte dans un onglet de navigateur classique.
+    if (btn) btn.style.display = (isStandalone || _cpWasInstalled) ? 'none' : '';
     window.addEventListener('beforeinstallprompt', function(e) {
         e.preventDefault();
         window._cpDeferredPrompt = e;
-        if (btn) btn.style.display = '';
+        if (btn && !isStandalone && !_cpWasInstalled) btn.style.display = '';
         if (typeof window.cpMaybeShowInstallBanner === 'function') window.cpMaybeShowInstallBanner();
     });
-    window.addEventListener('appinstalled', function() { if (btn) btn.style.display = 'none'; var bn = document.getElementById('cp-install-banner'); if (bn) bn.style.display = 'none'; showScanToast('✅ Application installée', 'success'); });
+    window.addEventListener('appinstalled', function() { if (btn) btn.style.display = 'none'; try { localStorage.setItem('covo_pwa_installed_cloturespro', '1'); } catch(e) {} var bn = document.getElementById('cp-install-banner'); if (bn) bn.style.display = 'none'; showScanToast('✅ Application installée', 'success'); });
 })();
 
 window.cpInstallClick = function() {
@@ -1839,9 +1845,11 @@ window.cpMaybeShowInstallBanner = function(){
     var b = document.getElementById('cp-install-banner');
     if (!b) return;
     var isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+    var wasInstalled = false;
+    try { wasInstalled = localStorage.getItem('covo_pwa_installed_cloturespro') === '1'; } catch(e) {}
     var dismissed = false;
     try { dismissed = localStorage.getItem('covo_pwa_dismiss_cloturespro') === '1'; } catch(e) {}
-    b.style.display = (!isStandalone && !dismissed && window._cpDeferredPrompt) ? 'flex' : 'none';
+    b.style.display = (!isStandalone && !wasInstalled && !dismissed && window._cpDeferredPrompt) ? 'flex' : 'none';
 };
 
 // ── Initialisation ────────────────────────────────────────────────────────
