@@ -23,6 +23,247 @@
 })();
 </script>
 <meta charset="UTF-8">
+<script id="covo-sync-core">
+/* ==========================================================================
+   COVO SYNC - noyau partage par COVO Pro et TOUTES les apps satellites
+   (meme fichier, meme code, meme origine => meme localStorage).
+   1) Detecte CHAQUE modification reelle d'une donnee metier (interception de
+      localStorage.setItem/removeItem, uniquement si la valeur change vraiment).
+   2) Pose un drapeau "covo_drive_pending" : tant qu'il existe, au moins une
+      modification n'est pas encore sur Google Drive (survit a la fermeture
+      de l'app ; n'importe quelle app connectee a Drive la sauvegardera).
+   3) Fournit les outils communs : empreinte de contenu (anti-doublon),
+      resume chiffre de la sauvegarde (proprietes Drive), garde anti-perte
+      multi-appareils, verrou inter-onglets, relais entre apps.
+   ========================================================================== */
+(function(){
+    if (window.CovoSync) return;
+    var LS;
+    try { LS = window.localStorage; } catch(e) { return; }
+    var SP = Storage.prototype;
+    var _get = SP.getItem, _set = SP.setItem, _rem = SP.removeItem;
+
+    var DATA_KEYS = ['covo_products','covo_categories','covo_promos','covo_users','covo_sales_history',
+        'covo_settings','covo_night_tariff','covo_cashier_permissions','covo_pending_sync','covo_delivery_goal',
+        'covo_retours','covo_marchandise','covo_echeances','covo_rhist','covo_hist','covo_sales',
+        'covo_approvisionnements','covo_inv_categories','covo_ech_categories','covo_messages','covo_quick_links',
+        'covo_caisse_historique','covo_charges_fixes','covo_paiements','covo_dettes','covo_loyalty','covo_paie',
+        'covo_cagnotte','covo_devis','covo_real_balance','covo_inventaires','covo_aw_panels','covo_modules_config',
+        'covo_inv_questions','covo_perm_admin_costprice','covo_admin_notifications'];
+    var KEYSET = {};
+    DATA_KEYS.forEach(function(k){ KEYSET[k] = 1; });
+
+    var PENDING = 'covo_drive_pending', LOCK = 'covo_drive_lock', FPK = 'gdrive_last_fp', DEVK = 'covo_device_id';
+    var APP_NAMES = { covo:'COVO Pro', gestion:'Gestion Pro', caisse:'Caisse Pro', fidelite:'Fid\u00e9lit\u00e9 Pro',
+        finances:'Finances Pro', investissement:'Approvisionnement Pro', historique:'Historique Pro',
+        clotures:'Cl\u00f4tures Pro', admin:'Admin Pro' };
+
+    var S = { muted: 0, app: 'covo', tab: 'T' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+              onDirty: null, onRelay: null, relayT: null, hb: null };
+
+    function rget(k) { try { return _get.call(LS, k); } catch(e) { return null; } }
+    function rset(k, v) { try { _set.call(LS, k, v); } catch(e) {} }
+    function rdel(k) { try { _rem.call(LS, k); } catch(e) {} }
+
+    function deviceId() {
+        var d = rget(DEVK);
+        if (!d) { d = 'D' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); rset(DEVK, d); }
+        return d;
+    }
+    function isMuted() { return S.muted > 0 || window._restoreInProgress === true || window._covoSyncMute === true; }
+
+    function markDirty(key) {
+        var now = new Date().toISOString();
+        rset(PENDING, now);
+        rset('covo_last_local_change', now);
+        if (typeof S.onDirty === 'function') { try { S.onDirty(key); } catch(e) {} }
+    }
+
+    // ---- Interception : toute ecriture qui CHANGE une donnee metier = modification ----
+    SP.setItem = function(k, v) {
+        var watch = (this === LS) && KEYSET[k] === 1 && !isMuted();
+        var before = watch ? rget(k) : null;
+        var r = _set.apply(this, arguments);
+        if (watch) { try { if (rget(k) !== before) markDirty(k); } catch(e) {} }
+        return r;
+    };
+    SP.removeItem = function(k) {
+        var watch = (this === LS) && KEYSET[k] === 1 && !isMuted();
+        var before = watch ? rget(k) : null;
+        var r = _rem.apply(this, arguments);
+        if (watch && before !== null) { try { markDirty(k); } catch(e) {} }
+        return r;
+    };
+
+    // ---- Empreinte du contenu (independante de l'heure) : evite les sauvegardes identiques ----
+    function fnv(str) {
+        var h1 = 0x811c9dc5, h2 = 0x01000193 ^ str.length;
+        for (var i = 0; i < str.length; i++) {
+            var c = str.charCodeAt(i);
+            h1 = Math.imul(h1 ^ c, 16777619);
+            h2 = Math.imul(h2 ^ c, 2246822519);
+        }
+        return ('0000000' + (h1 >>> 0).toString(16)).slice(-8) + ('0000000' + (h2 >>> 0).toString(16)).slice(-8);
+    }
+    function fingerprint(str) {
+        try {
+            if (window.crypto && window.crypto.subtle && window.TextEncoder) {
+                return window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(str)).then(function(buf) {
+                    var a = new Uint8Array(buf), s = '';
+                    for (var i = 0; i < 10; i++) s += ('0' + a[i].toString(16)).slice(-2);
+                    return s;
+                }).catch(function() { return fnv(str); });
+            }
+        } catch(e) {}
+        return Promise.resolve(fnv(str));
+    }
+    // Serialise avec des marqueurs a la place de la date/du nom => l'empreinte ne depend que des donnees
+    function serialize(obj) {
+        obj._savedAt = '__COVO_TS__';
+        obj._fileName = '__COVO_FN__';
+        return JSON.stringify(obj, null, 2);
+    }
+    function finalize(tpl, ts, fileName) {
+        return tpl.replace('"__COVO_TS__"', function() { return JSON.stringify(ts); })
+                  .replace('"__COVO_FN__"', function() { return JSON.stringify(fileName); });
+    }
+
+    // ---- Resume chiffre stocke dans les "properties" du fichier Drive (lisible sans le telecharger) ----
+    function num(x) { var n = parseFloat(x); return isFinite(n) ? n : 0; }
+    function r2(n) { return String(Math.round(n * 100) / 100); }
+    function arr(x) { return Array.isArray(x) ? x : []; }
+    function trimBytes(s, max) {
+        s = String(s == null ? '' : s);
+        try {
+            var enc = new TextEncoder();
+            if (enc.encode(s).length <= max) return s;
+            while (s.length && enc.encode(s + '\u2026').length > max) s = s.slice(0, -1);
+            return s + '\u2026';
+        } catch(e) { return s.length > Math.floor(max / 4) ? s.slice(0, Math.floor(max / 4)) : s; }
+    }
+    function lastAppro(list) {
+        var best = null, bt = -1;
+        list.forEach(function(a) {
+            if (!a) return;
+            var t = Date.parse(a.datetime || a.date || '') || 0;
+            if (!t && a.id != null) { var m = String(a.id).match(/(\d{12,})/); if (m) t = +m[1]; }
+            if (t > bt) { bt = t; best = a; }
+        });
+        return best;
+    }
+    function approLabel(a) {
+        if (!a) return '';
+        var nm = a.produitNom || a.desc || a.description || a.produit || a.name || 'Achat';
+        var q = num(a.qte != null ? a.qte : (a.quantite != null ? a.quantite : a.qty));
+        var s = String(nm);
+        if (q) s += ' \u00d7' + (Math.round(q * 1000) / 1000) + (a.unitType === 'kg' ? ' kg' : '');
+        var m = num(a.montant);
+        if (m) s += ' \u00b7 ' + m.toFixed(2) + ' \u20ac';
+        return s;
+    }
+    function summary(p, meta) {
+        p = p || {}; meta = meta || {};
+        var sh = (Array.isArray(p.salesHistory) && p.salesHistory.length) ? p.salesHistory : p.covo_sales_history;
+        var prods = arr(p.products), sales = arr(sh), appro = arr(p.covo_approvisionnements);
+        var stockU = 0, stockV = 0, ca = 0, apT = 0;
+        prods.forEach(function(x) { if (!x) return; var s = num(x.stock); stockU += s; stockV += s * num(x.costPrice); });
+        sales.forEach(function(x) { if (x && !x.cancelled) ca += num(x.total); });
+        appro.forEach(function(a) { if (a) apT += num(a.montant); });
+        var loy = p.covo_loyalty || {}, rb = p.covo_real_balance || {};
+        return {
+            nProducts: String(prods.length), nSales: String(sales.length), nAppro: String(appro.length),
+            stockU: r2(stockU), stockV: r2(stockV), caT: r2(ca), apT: r2(apT),
+            apL: trimBytes(approLabel(lastAppro(appro)), 115),
+            nCli: String(arr(loy.customers).length), nDet: String(arr(p.covo_dettes).length),
+            nPay: String(arr(p.covo_paiements).length), nRet: String(arr(p.covo_retours).length),
+            nDev: String(arr(p.covo_devis).length), nInv: String(arr(p.covo_inventaires).length),
+            nChg: String(arr(p.covo_charges_fixes).length), nEch: String(arr(p.covo_echeances).length),
+            bal: r2(num(rb.especes) + num(rb.cb)),
+            app: trimBytes(meta.app || S.app, 40), who: trimBytes(meta.who || '', 60), dev: deviceId(),
+            trg: trimBytes(meta.trg || 'auto', 30), fp: String(meta.fp || ''), sv: '2'
+        };
+    }
+
+    // ---- Garde anti-perte : bloque seulement une BAISSE suspecte des compteurs ----
+    // Baisse toleree si la derniere sauvegarde Drive vient de CET appareil (= vraie suppression
+    // faite ici) ET qu'elle est faible (<= 5 elements ou <= 2 %). Sinon : blocage + alerte.
+    function guard(newP, remoteProps, remoteName) {
+        if (!remoteProps || remoteProps.nProducts === undefined) return { block: false, drops: [] };
+        var drops = [];
+        [['nSales', 'Tickets de vente'], ['nProducts', 'Produits'], ['nAppro', 'Approvisionnements']].forEach(function(d) {
+            var a = parseInt(remoteProps[d[0]], 10) || 0, b = parseInt(newP[d[0]], 10) || 0;
+            if (b < a) drops.push({ key: d[0], label: d[1], from: a, to: b, diff: a - b });
+        });
+        if (!drops.length) return { block: false, drops: drops };
+        var mine = (remoteProps.dev && remoteProps.dev === deviceId()) || (!!remoteName && remoteName === rget('gdrive_last_file'));
+        var small = drops.every(function(d) { return d.diff <= Math.max(5, Math.ceil(d.from * 0.02)); });
+        return { block: !(mine && small), drops: drops, mine: !!mine };
+    }
+
+    // ---- Drapeau "modifications en attente" + verrou inter-onglets ----
+    function pending() { return rget(PENDING); }
+    function clearPending(buildIso) { var p = rget(PENDING); if (!p || !buildIso || p <= buildIso) rdel(PENDING); }
+    function tryLock() {
+        try {
+            var l = JSON.parse(rget(LOCK) || 'null');
+            if (l && l.tab !== S.tab && (Date.now() - l.ts) < 120000) return false;
+        } catch(e) {}
+        rset(LOCK, JSON.stringify({ tab: S.tab, app: S.app, ts: Date.now() }));
+        return true;
+    }
+    function unlock() {
+        try { var l = JSON.parse(rget(LOCK) || 'null'); if (!l || l.tab === S.tab) rdel(LOCK); } catch(e) { rdel(LOCK); }
+    }
+    function recordSaved(fileName, fp, size, buildIso) {
+        if (fp) rset(FPK, fp);
+        rset('gdrive_last_file', fileName);
+        rset('gdrive_last_save', new Date().toISOString());
+        if (size) rset('gdrive_last_payload_size', String(size));
+        clearPending(buildIso);
+    }
+
+    // ---- Relais : si une app n'a pas pu envoyer ses modifications, une autre app connectee le fait ----
+    function scheduleRelay() {
+        clearTimeout(S.relayT);
+        S.relayT = setTimeout(function() {
+            var p = rget(PENDING);
+            if (!p || typeof S.onRelay !== 'function') return;
+            if (Date.now() - Date.parse(p) < 15000) { scheduleRelay(); return; }
+            try { S.onRelay('relais'); } catch(e) {}
+        }, 20000 + Math.floor(Math.random() * 10000));
+    }
+    window.addEventListener('storage', function(e) {
+        if (e.key === PENDING && e.newValue) scheduleRelay();
+    });
+
+    function init(opts) {
+        opts = opts || {};
+        if (opts.app) S.app = opts.app;
+        if (typeof opts.onDirty === 'function') S.onDirty = opts.onDirty;
+        if (typeof opts.onRelay === 'function') S.onRelay = opts.onRelay;
+        if (!S.hb) {
+            // Filet de securite : toute modification restee en attente > 90 s est renvoyee
+            S.hb = setInterval(function() {
+                var p = rget(PENDING);
+                if (p && typeof S.onRelay === 'function' && (Date.now() - Date.parse(p)) > 90000) {
+                    try { S.onRelay('reprise'); } catch(e) {}
+                }
+            }, 60000);
+        }
+        if (rget(PENDING)) scheduleRelay();
+    }
+    function muteOn() { S.muted++; }
+    function muteOff() { S.muted = Math.max(0, S.muted - 1); }
+
+    window.CovoSync = {
+        DATA_KEYS: DATA_KEYS, APP_NAMES: APP_NAMES, deviceId: deviceId, markDirty: markDirty,
+        fingerprint: fingerprint, serialize: serialize, finalize: finalize, summary: summary, guard: guard,
+        pending: pending, clearPending: clearPending, tryLock: tryLock, unlock: unlock, recordSaved: recordSaved,
+        lastFp: function() { return rget(FPK); }, init: init, muteOn: muteOn, muteOff: muteOff,
+        appName: function(code) { return APP_NAMES[code] || code || ''; }
+    };
+})();
+</script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
 <title>Clôtures Pro — COVO</title>
 <link rel="manifest" id="pwa-manifest-link">
@@ -1561,15 +1802,18 @@ window.cpDriveConnect = async function(opts) {
             login_hint: localStorage.getItem('gdrive_hint_email') || '',
             callback: async function(resp) {
                 if (resp.error) {
+                    if (window._cpTokWait) { var _cpW2 = window._cpTokWait; window._cpTokWait = null; _cpW2(false); return; }
                     cpSetDriveStatus(false, silent ? 'Non connecté' : 'Erreur d\'authentification');
                     if (!silent) showScanToast('❌ Erreur de connexion Google Drive', 'error');
                     return;
                 }
                 _cpAccessToken = resp.access_token;
                 _cpConnected = true;
+                if (window._cpTokWait) { var _cpW = window._cpTokWait; window._cpTokWait = null; _cpW(true); return; } // renouvellement silencieux du jeton
                 _cpFolderId = localStorage.getItem('gdrive_folder_id') || null;
                 localStorage.setItem('gdrive_connected', '1');
                 cpSetDriveStatus(true, _cpFolderId ? 'Connecté — dossier partagé avec COVO Pro' : 'Connecté — aucun dossier configuré, connectez COVO Pro une première fois');
+                _cpSyncOnConnected();
                 if (!silent) showScanToast('✅ Google Drive connecté', 'success');
             }
         });
@@ -1581,16 +1825,11 @@ window.cpDriveConnect = async function(opts) {
     }
 };
 
-async function _cpFetch(url, opts) {
-    opts = opts || {};
-    opts.headers = Object.assign({}, opts.headers, { Authorization: 'Bearer ' + _cpAccessToken });
-    return fetch(url, opts);
-}
 
 // ===== Indicateur de sauvegarde visible UNIQUEMENT pour l'Admin-Développeur (isMaster) =====
-// L'Admin-Développeur n'a pas de sauvegarde Drive automatique (voir cpDriveBackupNow/cpDriveMarkDirty
-// plus bas) : cette pastille lui montre le nombre de modifications non synchronisées et lui permet
-// de lancer une synchronisation Drive complète en un clic. Invisible pour tous les autres comptes.
+// L'Admin-Développeur est désormais sauvegardé automatiquement (COVO Sync) comme tous les comptes :
+// cette pastille lui montre le nombre de modifications pas encore envoyées et lui permet de forcer
+// une synchronisation Drive complète en un clic. Invisible pour tous les autres comptes.
 window._cpMasterDirty = window._cpMasterDirty || 0;
 function _cpUpdateMasterSaveUI() {
     var bar = document.getElementById('cp-master-save-bar');
@@ -1619,27 +1858,66 @@ window.cpMasterManualSave = async function() {
     }
 };
 
-function cpDriveMarkDirty() {
-    // Compteur de modifications non sauvegardées — alimente l'indicateur visible uniquement par l'Admin-Développeur
-    if (typeof cpIsMasterDev === 'function' && cpIsMasterDev()) {
-        window._cpMasterDirty = (window._cpMasterDirty || 0) + 1;
-        if (typeof _cpUpdateMasterSaveUI === 'function') _cpUpdateMasterSaveUI();
+// ===================================================================================
+// COVO SYNC — sauvegarde Google Drive automatique à CHAQUE modification
+// (module identique dans toutes les apps satellites ; s'appuie sur le noyau COVO Sync
+// chargé dans <head> qui détecte toute modification réelle des données partagées).
+// - même contenu complet que COVO Pro (y compris devis, solde réel, inventaires)
+// - même résumé chiffré (ventes, appro., stock, clients…) visible dans la liste des sauvegardes
+// - mêmes protections anti-perte que COVO Pro, aucune sauvegarde en double
+// - si l'envoi échoue ou si Drive n'est pas connecté ici, la modification reste « en attente »
+//   et sera envoyée automatiquement (par cette app, par COVO Pro ou par une autre app ouverte)
+// ===================================================================================
+var _CP_APP = 'clotures';
+var _cpSaving = false, _cpResaveQueued = false, _cpDirtySince = 0, _cpGuardSnoozeUntil = 0;
+
+function _cpMasterReset() {
+    window._cpMasterDirty = 0;
+    if (typeof _cpUpdateMasterSaveUI === 'function') _cpUpdateMasterSaveUI();
+}
+function _cpShowPendingStatus() {
+    if (typeof cpSetDriveStatus === 'function' && !_cpConnected) {
+        cpSetDriveStatus(false, '⏳ Modifications en attente — envoyées dès que Drive est connecté (ici ou dans COVO Pro)');
     }
-    // Auto-save débouncé : écrit une nouvelle sauvegarde Drive 4s après la dernière modification.
-    if (!_cpConnected) return;
+}
+function cpDriveMarkDirty() {
+    // Auto-save débouncé : 4 s après la dernière modification (60 s maximum en saisie continue)
+    if (!_cpConnected) { _cpShowPendingStatus(); return; }
+    if (!_cpDirtySince) _cpDirtySince = Date.now();
     clearTimeout(window._cpAutoSaveTimer);
-    window._cpAutoSaveTimer = setTimeout(function(){ cpDriveBackupNow(true); }, 4000);
+    var wait = (Date.now() - _cpDirtySince > 55000) ? 0 : 4000;
+    window._cpAutoSaveTimer = setTimeout(function(){ _cpDirtySince = 0; cpDriveBackupNow(true); }, wait);
+}
+if (window.CovoSync) {
+    window.CovoSync.init({
+        app: _CP_APP,
+        onDirty: function() {
+            // Compteur de modifications (indicateur Admin-Développeur), puis envoi automatique
+            if (typeof cpIsMasterDev === 'function' && cpIsMasterDev()) {
+                window._cpMasterDirty = (window._cpMasterDirty || 0) + 1;
+                if (typeof _cpUpdateMasterSaveUI === 'function') _cpUpdateMasterSaveUI();
+            }
+            cpDriveMarkDirty();
+        },
+        onRelay: function(trg) { if (_cpConnected && !_cpSaving) cpDriveBackupNow(true, trg || 'relais'); }
+    });
+}
+function _cpSyncOnConnected() {
+    // Modifications restées en attente (app fermée avant l'envoi, autre app hors ligne…) : envoi immédiat
+    if (window.CovoSync && window.CovoSync.pending()) cpDriveMarkDirty();
 }
 
 function _cpBuildFullBackupPayload() {
     function J(k,d){ try{ var v=localStorage.getItem(k); return v!=null?JSON.parse(v):d; }catch(e){return d;} }
     function S(k){ return localStorage.getItem(k); }
-    return {
+    // Même structure et même ordre que la sauvegarde de COVO Pro (restaurable partout à l'identique)
+    var sh = J('covo_sales_history', []);
+    var p = {
         products: J('covo_products', []),
         categories: J('covo_categories', []),
         promoTypes: J('covo_promos', []),
         users: J('covo_users', []),
-        salesHistory: J('covo_sales_history', []),
+        salesHistory: sh,
         appSettings: J('covo_settings', {}),
         nightTariffSettings: J('covo_night_tariff', {}),
         cashierPermissions: J('covo_cashier_permissions', {}),
@@ -1671,64 +1949,176 @@ function _cpBuildFullBackupPayload() {
         covo_loyalty: J('covo_loyalty', {customers:[],settings:{}}),
         covo_paie: J('covo_paie', []),
         covo_cagnotte: J('covo_cagnotte', {solde:0,mouvements:[]}),
+        covo_devis: J('covo_devis', []),
+        covo_real_balance: J('covo_real_balance', {especes:0,cb:0,log:[]}),
         _version: 20,
-        _savedAt: new Date().toISOString()
+        _savedAt: new Date().toISOString(),
+        covo_sales_history: sh,
+        covo_inventaires: J('covo_inventaires', [])
     };
+    return p;
 }
 
 async function _cpEnsureFolder() {
-    if (_cpFolderId) return _cpFolderId;
+    // Toujours le dossier choisi dans COVO Pro : plus jamais de dossier « deviné » ou créé ici
+    // (les sauvegardes finissaient dans un autre dossier, invisibles depuis COVO Pro).
     _cpFolderId = localStorage.getItem('gdrive_folder_id') || null;
-    if (_cpFolderId) return _cpFolderId;
-    // Aucun dossier connu : chercher un dossier "COVO Pro" existant, sinon en créer un.
-    var q = encodeURIComponent("mimeType='application/vnd.google-apps.folder' and name contains 'COVO' and trashed=false");
-    var r = await _cpFetch('https://www.googleapis.com/drive/v3/files?q=' + q + '&fields=files(id,name)');
-    var j = await r.json();
-    if (j.files && j.files.length) { _cpFolderId = j.files[0].id; }
-    else {
-        var meta = { name: 'COVO Pro - Sauvegardes', mimeType: 'application/vnd.google-apps.folder' };
-        var cr = await _cpFetch('https://www.googleapis.com/drive/v3/files', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(meta) });
-        var cj = await cr.json();
-        _cpFolderId = cj.id;
-    }
-    if (_cpFolderId) { localStorage.setItem('gdrive_folder_id', _cpFolderId); }
     return _cpFolderId;
 }
 
-window.cpDriveBackupNow = async function(silent) {
-    // Lecture seule (readOnly) : aucune sauvegarde Drive autorisée, jamais — même via le bouton manuel
-    // "Sauvegarder maintenant" (silent falsy), contrairement au garde-fou isMaster juste en dessous.
-    var _cpCuRO = (typeof _covoCurrentUser === 'function') ? _covoCurrentUser() : null;
-    if (_cpCuRO && _cpCuRO.readOnly === true) {
-        if (!silent && typeof showScanToast === 'function') showScanToast('👁️ Mode consultation seule — sauvegarde désactivée par l\'Admin-Développeur', 'info');
-        return;
+function _cpRefreshToken() {
+    return new Promise(function(resolve) {
+        if (!_cpTokenClient) { resolve(false); return; }
+        var done = false;
+        window._cpTokWait = function(ok) { if (done) return; done = true; resolve(!!ok); };
+        setTimeout(function() { if (!done) { done = true; window._cpTokWait = null; resolve(false); } }, 15000);
+        try { _cpTokenClient.requestAccessToken({ prompt: '' }); }
+        catch(e) { if (!done) { done = true; window._cpTokWait = null; resolve(false); } }
+    });
+}
+async function _cpFetch(url, opts) {
+    opts = opts || {};
+    var h = Object.assign({}, opts.headers, { Authorization: 'Bearer ' + _cpAccessToken });
+    var resp = await fetch(url, Object.assign({}, opts, { headers: h }));
+    if (resp.status === 401) {
+        // Jeton Google expiré (~1 h) : renouvellement silencieux puis nouvel essai
+        var ok = await _cpRefreshToken();
+        if (!ok) {
+            _cpConnected = false;
+            if (typeof cpSetDriveStatus === 'function') cpSetDriveStatus(false, 'Session Google expirée — reconnectez Drive (modifications en attente)');
+            throw new Error('Token expiré');
+        }
+        h.Authorization = 'Bearer ' + _cpAccessToken;
+        resp = await fetch(url, Object.assign({}, opts, { headers: h }));
     }
-    // Admin-Développeur (isMaster) : sauvegarde Drive automatique désactivée — uniquement via le bouton manuel
-    // "Sauvegarder maintenant" (appelé sans argument, donc silent est falsy et ce garde-fou ne s'applique pas).
-    if (silent) {
-        var _cpCu = (typeof _covoCurrentUser === 'function') ? _covoCurrentUser() : null;
-        if (_cpCu && (_cpCu.isMaster || _cpCu.id === 'USR-MASTER')) return;
-    }
-    if (!_cpConnected) { if (!silent) showScanToast('⚠️ Connectez Google Drive d\'abord', 'info'); return; }
+    return resp;
+}
+async function _cpFetchLatestProps(folderId) {
     try {
-        var folderId = await _cpEnsureFolder();
-        if (!folderId) { if (!silent) showScanToast('❌ Impossible de déterminer le dossier Drive', 'error'); return; }
+        var q = encodeURIComponent("'"+folderId+"' in parents and trashed=false and name contains 'covo_backup'");
+        var r = await _cpFetch('https://www.googleapis.com/drive/v3/files?q='+q+'&orderBy=modifiedTime desc&pageSize=1&fields=files(id,name,properties)');
+        if (!r.ok) return null;
+        var j = await r.json();
+        var f = j.files && j.files[0];
+        return (f && f.properties) ? f : null;
+    } catch(e) { return null; }
+}
+
+window.cpDriveBackupNow = async function(silent, trigger) {
+    var CS = window.CovoSync || null;
+    // Lecture seule (readOnly) : aucune sauvegarde Drive autorisée, jamais
+    var cu = (typeof _covoCurrentUser === 'function') ? _covoCurrentUser() : null;
+    if (cu && cu.readOnly === true) {
+        if (!silent && typeof showScanToast === 'function') showScanToast('👁️ Mode consultation seule — sauvegarde désactivée par l\'Admin-Développeur', 'info');
+        return 'readonly';
+    }
+    // NB : l'Admin-Développeur est désormais sauvegardé automatiquement comme tous les comptes.
+    if (!_cpConnected) {
+        if (!silent) showScanToast('⚠️ Connectez Google Drive d\'abord — vos modifications restent en attente', 'info');
+        _cpShowPendingStatus();
+        return 'offline';
+    }
+    if (_cpSaving) { _cpResaveQueued = true; return 'busy'; }
+    if (silent && Date.now() < _cpGuardSnoozeUntil) return 'snoozed';
+    var folderId = await _cpEnsureFolder();
+    if (!folderId) {
+        cpSetDriveStatus(true, '⚠️ Aucun dossier Drive choisi — ouvrez COVO Pro une fois pour le choisir');
+        if (!silent) showScanToast('⚠️ Aucun dossier de sauvegarde choisi — choisissez-le dans COVO Pro', 'info');
+        return 'nofolder';
+    }
+    if (CS && !CS.tryLock()) {
+        // Une autre app COVO de cet appareil envoie déjà une sauvegarde : on repasse juste après
+        setTimeout(function(){ cpDriveMarkDirty(); }, 8000);
+        if (!silent) showScanToast('⏳ Une sauvegarde est déjà en cours — la vôtre suit automatiquement', 'info');
+        return 'busy';
+    }
+    _cpSaving = true;
+    var buildIso = new Date().toISOString();
+    var status = 'error';
+    try {
         var now = new Date();
+        var ts = now.toISOString();
         var date = now.toISOString().split('T')[0];
         var time = now.toTimeString().split(' ')[0].replace(/:/g, '-');
         var filename = 'covo_backup_' + date + '_' + time + '.json';
-        var content = JSON.stringify(_cpBuildFullBackupPayload(), null, 2);
-        var meta = { name: filename, parents: [folderId] };
-        var boundary = '-------cp' + Date.now();
-        var body = '--'+boundary+'\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n'+JSON.stringify(meta)+'\r\n--'+boundary+'\r\nContent-Type: application/json\r\n\r\n'+content+'\r\n--'+boundary+'--';
-        await _cpFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', { method:'POST', headers:{'Content-Type':'multipart/related; boundary='+boundary}, body: body });
+        var payload = _cpBuildFullBackupPayload();
+        payload._source = 'satellite_' + _CP_APP;
+        payload._folderName = localStorage.getItem('gdrive_folder_name') || '';
+        var tpl, fp = '';
+        if (CS) { tpl = CS.serialize(payload); fp = await CS.fingerprint(tpl); }
+        else { payload._savedAt = ts; payload._fileName = filename; tpl = JSON.stringify(payload, null, 2); }
+        // Anti-doublon : contenu strictement identique à la dernière sauvegarde envoyée → rien à faire
+        if (fp && fp === CS.lastFp()) {
+            CS.clearPending(buildIso);
+            _cpMasterReset();
+            cpSetDriveStatus(true, '✅ Drive à jour');
+            if (!silent) showScanToast('✅ Google Drive déjà à jour — aucune modification depuis la dernière sauvegarde', 'success');
+            status = 'same';
+            return status;
+        }
+        var content = CS ? CS.finalize(tpl, ts, filename) : tpl;
+        var props = CS
+            ? CS.summary(payload, { app: _CP_APP, who: (cu && (cu.username || cu.name)) || '', trg: trigger || (silent ? 'auto' : 'manuel'), fp: fp })
+            : { nProducts: String((payload.products||[]).length), nSales: String((payload.salesHistory||[]).length), nAppro: String((payload.covo_approvisionnements||[]).length) };
+        // Garde anti-perte multi-appareils (même règle que COVO Pro)
+        if (CS) {
+            var remote = await _cpFetchLatestProps(folderId);
+            if (remote) {
+                var g = CS.guard(props, remote.properties, remote.name);
+                if (g.block) {
+                    _cpGuardSnoozeUntil = Date.now() + 10 * 60 * 1000;
+                    var det = g.drops.map(function(d){ return d.label + ' ' + d.from + ' → ' + d.to; }).join(', ');
+                    cpSetDriveStatus(true, '⚠️ Sauvegarde suspendue (protection anti-perte)');
+                    showScanToast('⚠️ Sauvegarde Drive suspendue : cet appareil contient moins de données que la dernière sauvegarde (' + det + '). Ouvrez COVO Pro pour vérifier.', 'error');
+                    status = 'blocked';
+                    return status;
+                }
+            }
+        }
+        var size = new Blob([content]).size;
+        var lastSize = parseInt(localStorage.getItem('gdrive_last_payload_size') || '0');
+        if (lastSize > 0 && size < lastSize * 0.6) {
+            _cpGuardSnoozeUntil = Date.now() + 10 * 60 * 1000;
+            cpSetDriveStatus(true, '⚠️ Sauvegarde suspendue (taille anormalement réduite)');
+            showScanToast('⚠️ Sauvegarde Drive suspendue : données ' + Math.round((1 - size / lastSize) * 100) + ' % plus petites que la précédente. Ouvrez COVO Pro pour vérifier.', 'error');
+            status = 'blocked';
+            return status;
+        }
+        var upload = function(pr) {
+            var meta = { name: filename, parents: [folderId], properties: pr };
+            var boundary = '-------cp' + Date.now();
+            var body = '--'+boundary+'\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n'+JSON.stringify(meta)+'\r\n--'+boundary+'\r\nContent-Type: application/json\r\n\r\n'+content+'\r\n--'+boundary+'--';
+            return _cpFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', { method:'POST', headers:{'Content-Type':'multipart/related; boundary='+boundary}, body: body });
+        };
+        var r = await upload(props);
+        if (!r.ok && r.status === 400) {
+            r = await upload({ nProducts: props.nProducts, nSales: props.nSales, nAppro: props.nAppro, dev: props.dev || '', app: props.app || _CP_APP, fp: props.fp || '' });
+        }
+        if (!r.ok) throw new Error('Drive HTTP ' + r.status);
+        var res = await r.json();
+        if (!res || !res.id) throw new Error('Drive : réponse sans identifiant de fichier');
+        if (CS) CS.recordSaved(filename, fp, size, buildIso);
+        else { localStorage.setItem('gdrive_last_file', filename); localStorage.setItem('gdrive_last_save', ts); localStorage.setItem('gdrive_last_payload_size', String(size)); }
+        _cpGuardSnoozeUntil = 0;
+        _cpMasterReset();
         cpSetDriveStatus(true, 'Dernière sauvegarde : ' + now.toLocaleTimeString('fr-FR'));
         if (!silent) showScanToast('✅ Sauvegarde Drive enregistrée', 'success');
+        status = 'saved';
     } catch(e) {
-        console.error(e);
-        if (!silent) showScanToast('❌ Échec de la sauvegarde Drive', 'error');
+        console.error('cpDriveBackupNow:', e);
+        status = (e && e.message === 'Token expiré') ? 'offline' : 'error';
+        cpSetDriveStatus(_cpConnected, '⚠️ Échec de la sauvegarde — nouvel essai automatique');
+        if (!silent) showScanToast('❌ Échec de la sauvegarde Drive — nouvel essai automatique', 'error');
+    } finally {
+        _cpSaving = false;
+        if (CS) CS.unlock();
+        if (_cpResaveQueued) { _cpResaveQueued = false; setTimeout(cpDriveMarkDirty, 1500); }
     }
+    return status;
 };
+
+
+
 
 window.cpDriveRestoreLatest = async function() {
     if (!_cpConnected) { showScanToast('⚠️ Connectez Google Drive d\'abord', 'info'); return; }
@@ -1751,7 +2141,13 @@ window.cpDriveRestoreLatest = async function() {
     }
 };
 
+// Restauration = données venant de Drive : ne pas les compter comme « modification à renvoyer »
 function _cpApplyRestore(data) {
+    if (window.CovoSync) window.CovoSync.muteOn();
+    try { return _cpApplyRestoreCore(data); }
+    finally { if (window.CovoSync) window.CovoSync.muteOff(); }
+}
+function _cpApplyRestoreCore(data) {
     if (!data) return;
     if (data.products)             localStorage.setItem('covo_products', JSON.stringify(data.products));
     if (data.categories)           localStorage.setItem('covo_categories', JSON.stringify(data.categories));
@@ -1766,7 +2162,7 @@ function _cpApplyRestore(data) {
     if (data.covo_dark_mode != null) localStorage.setItem('covo_dark_mode', data.covo_dark_mode);
     ['covo_retours','covo_marchandise','covo_echeances','covo_rhist','covo_hist','covo_sales','covo_approvisionnements',
      'covo_inv_categories','covo_ech_categories','covo_messages','covo_login_history','covo_quick_links',
-     'covo_caisse_historique','covo_charges_fixes','covo_paiements','covo_dettes','covo_loyalty','covo_paie','covo_cagnotte'
+     'covo_caisse_historique','covo_charges_fixes','covo_paiements','covo_dettes','covo_loyalty','covo_paie','covo_cagnotte','covo_inventaires','covo_devis','covo_real_balance'
     ].forEach(function(k){ if (data[k] !== undefined) localStorage.setItem(k, JSON.stringify(data[k])); });
     ['covo_aw_panels','covo_modules_config','covo_night_tariff','covo_presence','covo_inv_questions'].forEach(function(k){
         if (data[k] != null) localStorage.setItem(k, typeof data[k] === 'string' ? data[k] : JSON.stringify(data[k]));
