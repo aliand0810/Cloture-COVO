@@ -375,6 +375,7 @@
 </style>
 </head>
 <body>
+<script src="https://aliand0810.github.io/licences/licence_check.js" data-produit="COVO Pro" data-module="Clôtures"></script>
 
 <div id="cp-access-gate" style="display:none;position:fixed;inset:0;z-index:100000;background:#0a0a0a;color:#fff;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:24px;gap:16px;">
     <div style="font-size:3rem;">🔒</div>
@@ -384,7 +385,6 @@
 </div>
 
 <div id="cp-topbar">
-    <a class="cp-back" href="https://aliand0810.github.io/Covo-pro/" target="covopro">← COVO Pro</a>
     <div class="cp-title">🗓️ Clôtures Pro<small>Module Clôtures de poste — données partagées avec COVO Pro</small></div>
     <span id="cp-user-badge">👤 —</span>
     <span id="cp-master-save-bar" onclick="cpMasterManualSave()" title="Sauvegarder toutes les modifications sur Google Drive (Admin-Développeur)" style="display:none;align-items:center;gap:5px;background:linear-gradient(135deg,#e74c3c,#c0392b);color:#fff;border-radius:8px;padding:5px 12px;cursor:pointer;font-weight:800;font-size:0.78rem;white-space:nowrap;user-select:none;">💾 <span id="cp-master-save-count">0</span></span>
@@ -2315,6 +2315,63 @@ window.cpMaybeShowInstallBanner = function(){
     // Connexion Google Drive automatique par défaut, dès l'ouverture — plus besoin de cliquer
     // "Connecter" ici : réutilise le Client ID déjà configuré via COVO Pro (silencieuse).
     if (savedClientId) { setTimeout(function(){ cpDriveConnect({ silent: true }); }, 1200); }
+})();
+</script>
+<script>
+/* ═══════════════════════════════════════════════════════════════════════════
+   BARRE DU HAUT AUTO-MASQUÉE (toutes les apps satellites)
+   • Masquée par défaut : la page gagne toute la hauteur de l'écran
+   • Souris en haut de l'écran (ou sur la barre) → elle descend ; la souris s'en va → elle remonte
+   • Écran tactile : petite languette « ▾ » en haut au centre pour l'ouvrir / la refermer
+   • Reste ouverte tant qu'un champ ou un bouton de la barre a le focus (clavier)
+   ═══════════════════════════════════════════════════════════════════════════ */
+(function () {
+    'use strict';
+    if (window._cpTopAutoHide) return;
+    window._cpTopAutoHide = true;
+    function init() {
+        var bar = document.getElementById('cp-topbar'); if (!bar) return;
+        var css = document.createElement('style');
+        css.textContent = [
+            '#cp-topbar{position:fixed!important;top:0;left:0;right:0;z-index:9600!important;transform:translateY(-100%);transition:transform .22s ease,box-shadow .22s ease;will-change:transform;}',
+            '#cp-topbar.cp-tb-show{transform:none;box-shadow:0 10px 28px rgba(0,0,0,.18);}',
+            '#cp-tb-zone{position:fixed;top:0;left:0;right:0;height:10px;z-index:9599;}',
+            '#cp-tb-tab{position:fixed;top:0;left:50%;transform:translateX(-50%);z-index:9598;border:1px solid var(--border-color,#ccc);border-top:none;border-radius:0 0 12px 12px;background:var(--bg-card,#fff);color:var(--text-muted,#666);font-size:.7rem;font-weight:800;line-height:1;padding:3px 14px 5px;cursor:pointer;opacity:.75;box-shadow:0 3px 10px rgba(0,0,0,.12);transition:opacity .2s,transform .22s;font-family:inherit;}',
+            '#cp-tb-tab:hover{opacity:1;}',
+            'body.cp-tb-open #cp-tb-tab{opacity:0;pointer-events:none;}',
+            '#gst-subtabs{top:0!important;}',
+            '@media print{#cp-tb-zone,#cp-tb-tab{display:none!important;}}',
+            '@media (prefers-reduced-motion: reduce){#cp-topbar{transition:none;}}'
+        ].join('\n');
+        document.head.appendChild(css);
+        var zone = document.createElement('div'); zone.id = 'cp-tb-zone'; zone.setAttribute('aria-hidden', 'true');
+        var tab = document.createElement('button'); tab.id = 'cp-tb-tab'; tab.type = 'button'; tab.textContent = '▾'; tab.title = 'Afficher la barre du haut'; tab.setAttribute('aria-label', 'Afficher la barre du haut');
+        document.body.appendChild(zone); document.body.appendChild(tab);
+        var t = null, pinned = false;
+        function show() { clearTimeout(t); bar.classList.add('cp-tb-show'); document.body.classList.add('cp-tb-open'); }
+        function hide(delay) {
+            clearTimeout(t);
+            t = setTimeout(function () {
+                if (pinned || bar.matches(':hover') || bar.contains(document.activeElement)) return;
+                bar.classList.remove('cp-tb-show'); document.body.classList.remove('cp-tb-open');
+            }, delay == null ? 450 : delay);
+        }
+        zone.addEventListener('mouseenter', show);
+        bar.addEventListener('mouseenter', show);
+        bar.addEventListener('mouseleave', function () { hide(); });
+        bar.addEventListener('focusin', show);
+        bar.addEventListener('focusout', function () { hide(200); });
+        document.addEventListener('mousemove', function (e) { if (e.clientY <= 6) show(); }, { passive: true });
+        // Tactile : la languette ouvre la barre, un appui ailleurs la referme
+        tab.addEventListener('click', function () { pinned = true; show(); });
+        document.addEventListener('pointerdown', function (e) {
+            if (!pinned) return;
+            if (bar.contains(e.target) || e.target === tab) return;
+            pinned = false; hide(0);
+        }, true);
+        window._cpTopbarShow = show; window._cpTopbarHide = function () { pinned = false; hide(0); };
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 })();
 </script>
 </body>
