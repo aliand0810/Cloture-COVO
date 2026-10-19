@@ -2230,8 +2230,11 @@ function _cpApplyRestoreCore(data) {
     var manifest = {
         name: "Clôtures Pro — COVO",
         short_name: "Clôtures Pro",
-        start_url: "./clotures_pro.html",
-        scope: "./",
+        start_url: location.origin + location.pathname.replace(/[^\/]*$/, ''),
+        scope: location.origin + location.pathname.replace(/[^\/]*$/, ''),
+        // Ouverture directe depuis COVO Pro : le lien web+covoclotures:… lance l'application installée
+        protocol_handlers: [{ protocol: "web+covoclotures", url: location.origin + location.pathname.replace(/[^\/]*$/, '') + "?ouvrir=%s" }],
+        launch_handler: { client_mode: ["focus-existing", "auto"] },
         display: "standalone",
         background_color: "#0a0a0a",
         theme_color: "#1a3a5c",
@@ -2240,6 +2243,11 @@ function _cpApplyRestoreCore(data) {
             { src: "data:image/png;base64,"+ICON512, sizes: "512x512", type: "image/png", purpose: "any maskable" }
         ]
     };
+    // Application lancée via le protocole (depuis COVO Pro) : la version installée gère l'ouverture directe
+    try {
+        if (/[?&]ouvrir=/.test(location.search)) { localStorage.setItem('covo_pwa_proto_cloturespro', '1'); history.replaceState(null, '', location.pathname); }
+        window.addEventListener('appinstalled', function () { try { localStorage.setItem('covo_pwa_proto_cloturespro', '1'); } catch (e) {} });
+    } catch (e) {}
     var blob = new Blob([JSON.stringify(manifest)], { type: 'application/json' });
     var link = document.getElementById('pwa-manifest-link');
     if (link) link.setAttribute('href', URL.createObjectURL(blob));
