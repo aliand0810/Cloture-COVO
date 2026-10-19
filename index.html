@@ -2374,5 +2374,235 @@ window.cpMaybeShowInstallBanner = function(){
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 })();
 </script>
+<script>
+/* ════════════════════════════════════════════════════════════════════════
+   COVO — CONNEXION GOOGLE AUTOMATIQUE DES SATELLITES + ALERTE « ANOMALIE : NON CONNECTÉ »
+   • Le compte Google est présélectionné automatiquement (login_hint) : plus de fenêtre
+     « Sélectionnez un compte » — l'adresse utilisée est retenue après chaque connexion réussie
+     (gdrive_hint_email, partagée avec COVO Pro et les autres satellites du même site)
+   • Toute anomalie (fenêtre bloquée ou fermée, accès refusé, session expirée, Google sans
+     réponse, Client ID absent, pas d'internet) est affichée en grand avec son explication
+     et un bouton « Se reconnecter » ; une fois la fenêtre fermée, un bandeau rouge reste visible
+   ════════════════════════════════════════════════════════════════════════ */
+(function () {
+    'use strict';
+    if (window._cpaInstalled) return;
+    window._cpaInstalled = true;
+
+    var HINT = 'gdrive_hint_email';
+    var ctx = { silent: false, forceSelect: false, waiting: false, timer: null, ok: false, dismissed: false, last: null };
+    function $(id) { return document.getElementById(id); }
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function getHint() { try { return (localStorage.getItem(HINT) || localStorage.getItem('gdrive_email') || '').trim(); } catch (e) { return ''; } }
+    function setHint(v) { try { if (v) localStorage.setItem(HINT, v); else localStorage.removeItem(HINT); } catch (e) {} }
+    function validMail(v) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v || ''); }
+    function toast(m, t) { if (typeof showScanToast === 'function') showScanToast(m, t || 'info'); }
+    function appName() { return (document.title || 'Cette application').split(/[—–|-]/)[0].trim() || 'Cette application'; }
+
+    /* ───────────── Explications des anomalies ───────────── */
+    function explain(kind, code) {
+        var mail = getHint();
+        switch (kind) {
+            case 'noclient': return { t: 'Le Client ID Google n’est pas configuré ici', d: 'Cette application (' + location.host + ') ne connaît pas encore le Client ID Google utilisé par COVO Pro. Ouvrez les réglages Google Drive et collez le même Client ID que dans COVO Pro, puis cliquez sur « Connecter ».', a: 'panel' };
+            case 'gis': return { t: 'Le service de connexion Google ne répond pas', d: 'Impossible de charger le module de connexion Google. Vérifiez la connexion internet de l’appareil, puis réessayez.' };
+            case 'timeout': return { t: 'Google n’a pas répondu', d: 'La connexion automatique n’a pas abouti : connexion internet lente, ou fenêtre de connexion Google bloquée ou restée cachée derrière cette fenêtre.' };
+            case 'expired': return { t: 'La session Google a expiré', d: 'La connexion à Google Drive a été perdue (session expirée ou compte déconnecté de Google' + (mail ? ' : ' + mail : '') + ').' };
+            case 'popup':
+                if (code === 'popup_failed_to_open') return { t: 'Le navigateur a bloqué la fenêtre de connexion', d: 'La connexion automatique a besoin d’ouvrir une petite fenêtre Google. Cliquez sur « Se reconnecter » ; si rien ne s’ouvre, autorisez les fenêtres pop-up pour ' + location.host + ' dans le navigateur.' };
+                if (code === 'popup_closed') return { t: 'La fenêtre de connexion Google a été fermée', d: 'La fenêtre Google a été fermée avant la fin de la connexion.' };
+                return { t: 'La fenêtre de connexion Google a rencontré un problème', d: 'Code : ' + (code || 'inconnu') + '.' };
+            case 'oauth':
+                if (code === 'access_denied') return { t: 'Accès à Google Drive refusé', d: 'Le compte' + (mail ? ' ' + mail : '') + ' n’a pas autorisé l’accès à Google Drive pour cette application. Reconnectez-vous et acceptez l’accès, ou choisissez un autre compte.' };
+                if (/interaction_required|login_required|consent_required|account_selection_required/.test(code || '')) return { t: 'Google demande une confirmation', d: (mail ? 'Le compte ' + mail + ' n’est plus connecté dans ce navigateur' : 'Aucun compte Google n’est connecté dans ce navigateur') + ', ou l’accès n’a pas encore été autorisé pour ' + location.host + '. Cliquez sur « Se reconnecter » (une seule fois).' };
+                return { t: 'Erreur de connexion Google', d: 'Google a répondu : ' + (code || 'erreur inconnue') + '.' };
+        }
+        return { t: 'Non connecté à Google Drive', d: 'La connexion automatique n’a pas abouti.' };
+    }
+
+    /* ───────────── Interface ───────────── */
+    var css = document.createElement('style');
+    css.id = 'cpa-css';
+    css.textContent = [
+        '#cpa-ov{position:fixed;inset:0;z-index:2147483000;background:rgba(15,10,10,.66);backdrop-filter:blur(5px);display:none;align-items:center;justify-content:center;padding:16px;}',
+        '#cpa-ov.open{display:flex;}',
+        '#cpa-box{width:100%;max-width:560px;background:#fff;color:#1e2d3d;border-radius:20px;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,.5);font-family:inherit;}',
+        'body.dark-mode #cpa-box{background:#161616;color:#f1f5f9;}',
+        '#cpa-hd{background:linear-gradient(135deg,#dc2626,#991b1b);color:#fff;padding:22px 24px 18px;text-align:center;}',
+        '#cpa-hd .ic{font-size:2.6rem;line-height:1;}',
+        '#cpa-hd h2{margin:8px 0 2px;font-size:1.45rem;font-weight:900;letter-spacing:.5px;text-transform:uppercase;}',
+        '#cpa-hd p{margin:0;font-size:.86rem;opacity:.9;font-weight:600;}',
+        '#cpa-bd{padding:18px 22px 20px;display:flex;flex-direction:column;gap:14px;}',
+        '#cpa-why{border-left:5px solid #dc2626;background:rgba(220,38,38,.07);border-radius:10px;padding:12px 14px;}',
+        '#cpa-why b{display:block;font-size:1.05rem;font-weight:900;margin-bottom:4px;color:#b91c1c;}',
+        'body.dark-mode #cpa-why b{color:#fca5a5;}',
+        '#cpa-why span{font-size:.88rem;line-height:1.45;}',
+        '#cpa-safe{font-size:.8rem;font-weight:700;color:#15803d;background:rgba(22,163,74,.08);border-radius:10px;padding:9px 12px;}',
+        'body.dark-mode #cpa-safe{color:#86efac;}',
+        '#cpa-bd label{font-size:.7rem;font-weight:800;text-transform:uppercase;letter-spacing:.4px;color:#64748b;display:block;margin-bottom:5px;}',
+        '#cpa-mail{width:100%;box-sizing:border-box;padding:11px 13px;border:1.5px solid #cbd5e1;border-radius:11px;font-size:.95rem;font-family:inherit;background:transparent;color:inherit;}',
+        '#cpa-mail:focus{outline:none;border-color:#dc2626;box-shadow:0 0 0 4px rgba(220,38,38,.12);}',
+        '#cpa-mail-h{font-size:.72rem;color:#64748b;margin-top:4px;font-weight:600;}',
+        '#cpa-acts{display:flex;gap:8px;flex-wrap:wrap;}',
+        '#cpa-acts button{flex:1 1 150px;border:none;border-radius:12px;padding:13px 12px;font-weight:900;font-size:.92rem;cursor:pointer;font-family:inherit;}',
+        '#cpa-go{background:linear-gradient(135deg,#16a34a,#15803d);color:#fff;box-shadow:0 6px 16px rgba(22,163,74,.3);}',
+        '#cpa-other{background:#f1f5f9;color:#1e2d3d;border:1.5px solid #cbd5e1!important;}',
+        'body.dark-mode #cpa-other{background:#222;color:#f1f5f9;border-color:#333!important;}',
+        '#cpa-later{flex-basis:100%!important;background:transparent;color:#64748b;font-weight:700!important;font-size:.82rem!important;padding:8px!important;text-decoration:underline;}',
+        '#cpa-code{font-size:.66rem;color:#94a3b8;text-align:center;}',
+        '#cpa-strip{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);z-index:2147482990;display:none;align-items:center;gap:10px;background:#dc2626;color:#fff;padding:10px 12px 10px 16px;border-radius:14px;box-shadow:0 10px 30px rgba(220,38,38,.45);font-weight:800;font-size:.86rem;max-width:calc(100vw - 24px);}',
+        '#cpa-strip.show{display:flex;}',
+        '#cpa-strip button{border:none;background:#fff;color:#b91c1c;font-weight:900;border-radius:10px;padding:7px 12px;cursor:pointer;font-family:inherit;white-space:nowrap;}',
+        '#cpa-strip .x{background:transparent;color:#fff;padding:4px 6px;}',
+        '#cpa-strip span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+        '@keyframes cpaPulse{0%,100%{box-shadow:0 10px 30px rgba(220,38,38,.45);}50%{box-shadow:0 10px 30px rgba(220,38,38,.85);}}',
+        '#cpa-strip.show{animation:cpaPulse 2.4s ease-in-out infinite;}'
+    ].join('\n');
+    document.head.appendChild(css);
+
+    var ov = null, strip = null;
+    function build() {
+        if (ov) return;
+        ov = document.createElement('div'); ov.id = 'cpa-ov';
+        ov.setAttribute('role', 'alertdialog'); ov.setAttribute('aria-modal', 'true'); ov.setAttribute('aria-labelledby', 'cpa-title'); ov.setAttribute('aria-describedby', 'cpa-why');
+        ov.innerHTML = '<div id="cpa-box"><div id="cpa-hd"><div class="ic">⚠️</div><h2 id="cpa-title">Anomalie : non connecté</h2><p id="cpa-sub"></p></div>'
+            + '<div id="cpa-bd"><div id="cpa-why"><b id="cpa-why-t"></b><span id="cpa-why-d"></span></div>'
+            + '<div id="cpa-safe">✅ Rien n’est perdu : vos modifications restent sur cet appareil et seront sauvegardées automatiquement dès la reconnexion.</div>'
+            + '<div><label for="cpa-mail">Compte Google sélectionné automatiquement</label><input type="email" id="cpa-mail" placeholder="votre.compte@gmail.com" autocomplete="email"><div id="cpa-mail-h">Ce compte sera choisi tout seul à chaque ouverture (plus de fenêtre « Sélectionnez un compte »).</div></div>'
+            + '<div id="cpa-acts"><button type="button" id="cpa-go">🔄 Se reconnecter</button><button type="button" id="cpa-other">👤 Choisir un autre compte</button><button type="button" id="cpa-later">Continuer sans connexion</button></div>'
+            + '<div id="cpa-code"></div></div></div>';
+        document.body.appendChild(ov);
+        strip = document.createElement('div'); strip.id = 'cpa-strip'; strip.setAttribute('role', 'status');
+        strip.innerHTML = '<span>⚠️ Anomalie : non connecté à Google Drive</span><button type="button" data-cpa="go">🔄 Se reconnecter</button><button type="button" data-cpa="info" class="x" title="Détails" aria-label="Détails">ⓘ</button>';
+        document.body.appendChild(strip);
+        $('cpa-go').onclick = function () { saveMail(); reconnect(false); };
+        $('cpa-other').onclick = function () { reconnect(true); };
+        $('cpa-later').onclick = function () { ctx.dismissed = true; ov.classList.remove('open'); strip.classList.add('show'); };
+        $('cpa-mail').addEventListener('change', saveMail);
+        strip.addEventListener('click', function (e) { var b = e.target.closest('[data-cpa]'); if (!b) return; if (b.getAttribute('data-cpa') === 'go') reconnect(false); else showBig(); });
+        document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && ov.classList.contains('open')) { e.stopPropagation(); $('cpa-later').click(); } }, true);
+    }
+    function saveMail() {
+        var v = ($('cpa-mail').value || '').trim();
+        if (!v) { setHint(''); return true; }
+        if (!validMail(v)) { $('cpa-mail-h').textContent = '⚠️ Adresse incomplète'; return false; }
+        setHint(v); $('cpa-mail-h').textContent = '✓ ' + v + ' sera sélectionné automatiquement.'; return true;
+    }
+    function showBig() {
+        build();
+        var a = ctx.last || { kind: 'unknown' }, x = explain(a.kind, a.code);
+        $('cpa-sub').textContent = appName() + ' · sauvegarde Google Drive';
+        $('cpa-why-t').textContent = x.t; $('cpa-why-d').textContent = x.d;
+        $('cpa-mail').value = getHint();
+        $('cpa-go').textContent = x.a === 'panel' ? '⚙️ Ouvrir les réglages Google Drive' : '🔄 Se reconnecter' + (getHint() ? ' (' + getHint() + ')' : '');
+        $('cpa-other').style.display = x.a === 'panel' ? 'none' : '';
+        $('cpa-code').textContent = 'Anomalie : ' + a.kind + (a.code ? ' / ' + a.code : '') + ' · ' + new Date().toLocaleTimeString('fr-FR') + ' · ' + location.host;
+        strip.classList.remove('show');
+        ov.classList.add('open');
+        setTimeout(function () { try { $('cpa-go').focus(); } catch (e) {} }, 50);
+    }
+    function anomaly(kind, code) {
+        ctx.waiting = false; clearTimeout(ctx.timer);
+        ctx.ok = false; ctx.last = { kind: kind, code: code || '' };
+        window._cpaLastAnomaly = ctx.last;
+        try { console.warn('[COVO connexion] anomalie', kind, code || ''); } catch (e) {}
+        if (ctx.dismissed) { build(); strip.classList.add('show'); return; }
+        showBig();
+    }
+    function success(token) {
+        ctx.waiting = false; clearTimeout(ctx.timer); ctx.forceSelect = false;
+        var wasBad = !!ctx.last; ctx.ok = true; ctx.last = null; ctx.dismissed = false; window._cpaLastAnomaly = null;
+        if (ov) ov.classList.remove('open'); if (strip) strip.classList.remove('show');
+        // Retient l'adresse réellement utilisée : elle sera présélectionnée la prochaine fois
+        if (token) {
+            fetch('https://www.googleapis.com/oauth2/v3/userinfo', { headers: { Authorization: 'Bearer ' + token } })
+                .then(function (r) { return r.ok ? r.json() : null; })
+                .then(function (u) {
+                    if (u && u.email) { setHint(u.email); try { localStorage.setItem('gdrive_email', u.email); } catch (e) {} }
+                    if (wasBad) toast('✅ Reconnecté à Google Drive' + (u && u.email ? ' (' + u.email + ')' : ''), 'success');
+                }).catch(function () { if (wasBad) toast('✅ Reconnecté à Google Drive', 'success'); });
+        }
+    }
+    function reconnect(chooseOther) {
+        var a = ctx.last && explain(ctx.last.kind, ctx.last.code);
+        if (a && a.a === 'panel') {
+            ov.classList.remove('open');
+            try { var p = $('cp-drive-panel'); if (p && p.style.display === 'none' && typeof cpToggleDrivePanel === 'function') cpToggleDrivePanel(); var i = $('cp-gdrive-client-id'); if (i) { i.scrollIntoView({ block: 'center' }); i.focus(); } } catch (e) {}
+            if (strip) strip.classList.add('show');
+            return;
+        }
+        ctx.forceSelect = !!chooseOther;
+        if (ov) ov.classList.remove('open');
+        if (strip) strip.classList.remove('show');
+        ctx.dismissed = false;
+        try { window.cpDriveConnect({}); } catch (e) { anomaly('popup', 'unknown'); }
+    }
+
+    /* ───────────── Branchement sur la connexion Google existante ───────────── */
+    function patchGIS() {
+        var o2 = window.google && google.accounts && google.accounts.oauth2;
+        if (!o2 || o2._cpaPatched) return;
+        var orig = o2.initTokenClient;
+        o2.initTokenClient = function (cfg) {
+            cfg = Object.assign({}, cfg);
+            var h = getHint(); if (h) cfg.login_hint = h;
+            var userCb = cfg.callback, userErr = cfg.error_callback;
+            cfg.callback = function (resp) {
+                if (resp && resp.error) anomaly('oauth', resp.error);
+                else success(resp && resp.access_token);
+                return userCb ? userCb.apply(this, arguments) : undefined;
+            };
+            cfg.error_callback = function (err) {
+                var t = (err && err.type) || 'unknown';
+                anomaly('popup', t);
+                try { if (userCb) userCb({ error: t }); } catch (e) {}       // libère l'attente de l'application
+                if (userErr) try { userErr(err); } catch (e) {}
+            };
+            var client = orig.call(this, cfg);
+            var req = client.requestAccessToken.bind(client);
+            client.requestAccessToken = function (ov2) {
+                ov2 = Object.assign({}, ov2 || {});
+                if (ctx.forceSelect) { ov2.prompt = 'select_account'; }
+                else { var hh = getHint(); if (hh) ov2.login_hint = hh; }
+                ctx.waiting = true; clearTimeout(ctx.timer);
+                ctx.timer = setTimeout(function () { if (ctx.waiting) anomaly('timeout'); }, ctx.silent ? 30000 : 120000);
+                return req(ov2);
+            };
+            return client;
+        };
+        o2._cpaPatched = true;
+    }
+    if (typeof window._cpLoadGIS === 'function') {
+        var origLoad = window._cpLoadGIS;
+        window._cpLoadGIS = function () {
+            return origLoad.apply(this, arguments).then(function (v) { patchGIS(); return v; }, function (e) { anomaly('gis'); throw e; });
+        };
+    }
+    if (typeof window.cpDriveConnect === 'function') {
+        var origConn = window.cpDriveConnect;
+        window.cpDriveConnect = function (opts) {
+            ctx.silent = !!(opts && opts.silent);
+            var inp = $('cp-gdrive-client-id'), cid = (inp && inp.value.trim()) || localStorage.getItem('gdrive_client_id') || '';
+            var r = origConn.apply(this, arguments);
+            if (!cid) anomaly('noclient');
+            return r;
+        };
+    }
+    // Session expirée pendant l'utilisation (renouvellement du jeton impossible)
+    if (typeof window.cpSetDriveStatus === 'function') {
+        var origSt = window.cpSetDriveStatus;
+        window.cpSetDriveStatus = function (connected, label) {
+            var r = origSt.apply(this, arguments);
+            if (!connected && /expir/i.test(label || '') && !ctx.last) anomaly('expired');
+            return r;
+        };
+    }
+    // Pas de Client ID du tout : la connexion automatique ne démarre jamais → on le signale
+    setTimeout(function () {
+        var cid = ''; try { cid = localStorage.getItem('gdrive_client_id') || ''; } catch (e) {}
+        if (!cid && !ctx.ok && !ctx.last) anomaly('noclient');
+    }, 4000);
+    window._cpaAnomaly = anomaly;      // diagnostic
+})();
+</script>
 </body>
 </html>
