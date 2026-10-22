@@ -2612,5 +2612,447 @@ window.cpMaybeShowInstallBanner = function(){
     window._cpaAnomaly = anomaly;      // diagnostic
 })();
 </script>
+<script>
+/* ════════════════════════════════════════════════════════════════════════
+   CLÔTURES PRO — NOUVEAU TABLEAU DE BORD
+   • Bandeau : période (Aujourd'hui → 12 mois, dates), type, caissier, recherche, export
+   • Alertes : clôture finale du jour pas encore faite, jours avec ventes sans clôture finale
+   • 8 indicateurs par JOUR (une journée = sa clôture finale, sinon la dernière intermédiaire,
+     plus de double comptage) avec comparaison à la période précédente
+   • Graphiques : chiffre par jour · écarts de caisse par jour (manque / excédent)
+   • Calendrier des clôtures (juste / petit écart / gros écart / intermédiaire / manquante)
+   • Par caissier : clôtures, chiffre, écart cumulé, caisses justes, durée moyenne
+   • Liste par jour en cartes (ou tableau compact), détail, ticket, modifier, supprimer
+   • Fiche détaillée : comptage des billets et pièces quand il a été fait
+   ════════════════════════════════════════════════════════════════════════ */
+(function () {
+    'use strict';
+    if (window._clxInstalled) return;
+    window._clxInstalled = true;
+    function $(id) { return document.getElementById(id); }
+    function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function eur(v) { return (+v || 0).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €'; }
+    function eur0(v) { return Math.round(+v || 0).toLocaleString('fr-FR') + ' €'; }
+    function sgn(v) { return (v > 0 ? '+' : v < 0 ? '−' : '') + eur(Math.abs(v)); }
+    function norm(s) { return String(s == null ? '' : s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, ''); }
+    function admin() { try { return typeof cpIsAdmin === 'function' && cpIsAdmin(); } catch (e) { return false; } }
+    function load() { try { return typeof _loadCaisseHistorique === 'function' ? _loadCaisseHistorique() : JSON.parse(localStorage.getItem('covo_caisse_historique') || '[]'); } catch (e) { return []; } }
+    function k(d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+    function dayOf(h) { if (h && h.date && /^\d{4}-\d{2}-\d{2}$/.test(h.date)) return h.date; var d = new Date(h && h.datetime || Date.now()); return k(d); }
+    function dParse(s) { return new Date(s + 'T12:00:00'); }
+    var JS = ['dim.', 'lun.', 'mar.', 'mer.', 'jeu.', 'ven.', 'sam.'];
+    function dLabel(s, long) { var d = dParse(s), t = new Date(), y = new Date(); y.setDate(t.getDate() - 1); if (s === k(t)) return 'Aujourd’hui'; if (s === k(y)) return 'Hier'; return d.toLocaleDateString('fr-FR', long ? { weekday: 'long', day: 'numeric', month: 'long', year: d.getFullYear() !== t.getFullYear() ? 'numeric' : undefined } : { weekday: 'short', day: 'numeric', month: 'short' }); }
+    function gap(h) { if (!h) return null; if (h.ecartEsp == null && h.ecartCb == null) return null; return Math.round(((+h.ecartEsp || 0) + (+h.ecartCb || 0)) * 100) / 100; }
+    function lvl(g) { return g == null ? 'none' : Math.abs(g) < 0.01 ? 'ok' : Math.abs(g) <= 2 ? 'warn' : 'bad'; }
+    function durMin(h) { if (!h || !h.prisePoste || !h.datetime) return null; var p = String(h.prisePoste).split(':'); if (p.length < 2) return null; var end = new Date(h.datetime), st = new Date(end); st.setHours(+p[0], +p[1], 0, 0); if (st > end) st.setDate(st.getDate() - 1); var m = Math.round((end - st) / 60000); return m > 0 && m < 1440 ? m : null; }
+    function durTxt(m) { if (m == null) return '—'; var h = Math.floor(m / 60), mm = m % 60; return h ? h + ' h ' + String(mm).padStart(2, '0') : mm + ' min'; }
+
+    /* ───────────── État ───────────── */
+    var UI = { period: '30', type: '', cashier: '', from: '', to: '', q: '', view: 'cards', day: '', lim: 40 };
+    try { var u0 = JSON.parse(localStorage.getItem('covo_clx_ui') || 'null'); if (u0) { UI.period = u0.period || '30'; UI.view = u0.view || 'cards'; } } catch (e) {}
+    function save() { try { localStorage.setItem('covo_clx_ui', JSON.stringify({ period: UI.period, view: UI.view })); } catch (e) {} }
+    function range() {
+        var t0 = new Date(); t0.setHours(0, 0, 0, 0);
+        if (UI.period === 'custom') { var a = UI.from ? dParse(UI.from) : new Date(t0.getTime() - 29 * 864e5), b = UI.to ? dParse(UI.to) : new Date(); a.setHours(0, 0, 0, 0); b.setHours(23, 59, 59, 999); var n = Math.round((b - a) / 864e5); return { a: a, b: b, n: n, pa: new Date(a.getTime() - (n + 1) * 864e5), pb: new Date(a.getTime() - 1), label: 'du ' + a.toLocaleDateString('fr-FR') + ' au ' + b.toLocaleDateString('fr-FR') }; }
+        if (UI.period === 'all') return { a: new Date(2000, 0, 1), b: new Date(), n: 0, label: 'tout l’historique' };
+        var n2 = +UI.period || 30; if (UI.period === '0') n2 = 1;
+        var a2 = new Date(t0.getTime() - (n2 - 1) * 864e5), e2 = new Date(); e2.setHours(23, 59, 59, 999);
+        return { a: a2, b: e2, n: n2, pa: new Date(a2.getTime() - n2 * 864e5), pb: new Date(a2.getTime() - 1), label: UI.period === '0' ? 'aujourd’hui' : n2 + ' derniers jours' };
+    }
+    function inR(s, a, b) { var d = dParse(s); return d >= a && d <= b; }
+
+    /* ───────────── Données : journées ───────────── */
+    function salesDays() {
+        var S = []; try { S = JSON.parse(localStorage.getItem('covo_sales_history') || '[]'); } catch (e) {}
+        var m = {}; S.forEach(function (s) { if (!s || s.cancelled || !s.date) return; var d = new Date(s.date); if (isNaN(d)) return; var kk = k(d); m[kk] = (m[kk] || 0) + 1; }); return m;
+    }
+    var SD = { at: 0, m: {} };
+    function sd() { if (Date.now() - SD.at > 60000) SD = { at: Date.now(), m: salesDays() }; return SD.m; }
+    function days(hist) {
+        var D = {};
+        hist.forEach(function (h) { var s = dayOf(h), o = D[s] || (D[s] = { day: s, all: [], fin: null, last: null }); o.all.push(h); if (!h.partiel && (!o.fin || String(h.datetime) > String(o.fin.datetime))) o.fin = h; if (!o.last || String(h.datetime) > String(o.last.datetime)) o.last = h; });
+        Object.keys(D).forEach(function (s) { var o = D[s], r = o.fin || o.last; o.ref = r; o.ca = +r.totalJour || 0; o.ventes = +r.nbVentes || 0; o.gap = o.fin ? gap(o.fin) : null; o.lvl = o.fin ? lvl(o.gap) : 'part'; });
+        return D;
+    }
+    function filt(hist) {
+        var R = range(), q = norm(UI.q);
+        return hist.filter(function (h) {
+            var s = dayOf(h); if (!inR(s, R.a, R.b)) return false;
+            if (UI.type === 'final' && h.partiel) return false; if (UI.type === 'partiel' && !h.partiel) return false;
+            if (UI.cashier && (h.caissier || 'Inconnu') !== UI.cashier) return false;
+            if (UI.day && s !== UI.day) return false;
+            if (q && norm([h.caissier, h.note, h.id, s, dLabel(s, true)].join(' ')).indexOf(q) < 0) return false;
+            return true;
+        });
+    }
+    function stats(hist, a, b) {
+        var D = days(hist.filter(function (h) { var s = dayOf(h); return inR(s, a, b) && (!UI.cashier || (h.caissier || 'Inconnu') === UI.cashier); }));
+        var L = Object.keys(D).map(function (s) { return D[s]; });
+        var o = { days: L.length, ca: 0, ventes: 0, fin: 0, part: 0, eEsp: 0, nEsp: 0, eCb: 0, nCb: 0, just: 0, counted: 0, dur: 0, nDur: 0, mEsp: 0, pEsp: 0 };
+        L.forEach(function (d) {
+            o.ca += d.ca; o.ventes += d.ventes; d.all.forEach(function (h) { if (h.partiel) o.part++; else o.fin++; });
+            if (d.fin) { var f = d.fin; if (f.ecartEsp != null) { o.eEsp += +f.ecartEsp; o.nEsp++; if (f.ecartEsp < 0) o.mEsp += -f.ecartEsp; else o.pEsp += +f.ecartEsp; } if (f.ecartCb != null) { o.eCb += +f.ecartCb; o.nCb++; } var g = gap(f); if (g != null) { o.counted++; if (Math.abs(g) < 0.01) o.just++; } var m = durMin(f); if (m != null) { o.dur += m; o.nDur++; } }
+        });
+        o.D = D; return o;
+    }
+
+    /* ───────────── Styles ───────────── */
+    var css = document.createElement('style');
+    css.id = 'clx-css';
+    css.textContent = [
+        '#clx{--x-acc:#2a78d6;--x-ok:#0ca30c;--x-warn:#e8920c;--x-bad:#d03b3b;--x-part:#6250d6;--x-mute:var(--text-muted,#6b7280);--x-soft:rgba(15,23,42,.045);--x-line:var(--border-color,#e5e9f0);--x-card:var(--bg-card,#fff);--x-shadow:0 1px 2px rgba(15,23,42,.05),0 4px 14px rgba(15,23,42,.05);color:var(--text-main,#0f172a);padding-bottom:30px;}',
+        'body.dark-mode #clx{--x-acc:#3987e5;--x-soft:rgba(255,255,255,.06);--x-shadow:0 1px 2px rgba(0,0,0,.45);--x-ok:#3fbf3f;--x-bad:#e66767;--x-part:#9085e9;}',
+        '#tab-clotures.clx-on > *:not(#clx){display:none!important;}',
+        '#clx *{box-sizing:border-box;}',
+        '#clx-hero{background:linear-gradient(125deg,#0b2a3e 0%,#123f5c 45%,#127a6b 100%);color:#fff;padding:18px 20px 14px;border-radius:0 0 22px 22px;position:relative;overflow:hidden;}',
+        '#clx-hero::after{content:"";position:absolute;right:-60px;top:-80px;width:260px;height:260px;border-radius:50%;background:radial-gradient(circle,rgba(26,188,156,.35),transparent 70%);pointer-events:none;}',
+        '#clx-hero .r1{display:flex;align-items:center;gap:14px;flex-wrap:wrap;position:relative;z-index:1;}',
+        '#clx-hero h1{margin:0;font-size:1.35rem;font-weight:900;letter-spacing:-.3px;color:#fff!important;display:flex;align-items:center;gap:10px;}',
+        '#clx-hero h1 i{font-style:normal;width:40px;height:40px;border-radius:12px;background:rgba(255,255,255,.15);display:inline-flex;align-items:center;justify-content:center;font-size:1.2rem;}',
+        '#clx-hero p{margin:3px 0 0;font-size:.78rem;color:rgba(255,255,255,.8)!important;font-weight:600;}',
+        '#clx-hero .sp{flex:1;}',
+        '.clx-hb{border:none;background:rgba(255,255,255,.14);color:#fff;border-radius:10px;padding:8px 12px;font-size:.78rem;font-weight:800;cursor:pointer;font-family:inherit;white-space:nowrap;box-shadow:inset 0 0 0 1px rgba(255,255,255,.2);}',
+        '.clx-hb:hover{background:rgba(255,255,255,.24);}',
+        '.clx-per{display:flex;gap:3px;padding:3px;border-radius:12px;background:rgba(0,0,0,.22);margin-top:14px;overflow-x:auto;scrollbar-width:none;position:relative;z-index:1;}',
+        '.clx-per::-webkit-scrollbar{display:none;}',
+        '.clx-per button{flex:1 0 auto;border:none;background:transparent;color:rgba(255,255,255,.86);font-weight:800;font-size:.78rem;padding:8px 11px;border-radius:9px;cursor:pointer;font-family:inherit;white-space:nowrap;}',
+        '.clx-per button.on{background:#fff;color:#0b2a3e;}',
+        '.clx-dates{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px;font-size:.78rem;font-weight:700;position:relative;z-index:1;}',
+        '.clx-dates input{padding:7px 10px;border-radius:9px;border:none;font-family:inherit;font-weight:700;}',
+        '#clx-body{padding:14px 16px 0;max-width:1400px;margin:0 auto;}',
+        '.clx-bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;}',
+        '.clx-seg{display:inline-flex;gap:2px;padding:3px;border-radius:11px;background:var(--x-soft);border:1px solid var(--x-line);}',
+        '.clx-seg button{border:none;background:transparent;color:var(--x-mute);font-weight:800;font-size:.76rem;padding:7px 11px;border-radius:8px;cursor:pointer;font-family:inherit;white-space:nowrap;}',
+        '.clx-seg button.on{background:var(--x-card);color:var(--text-main,#0f172a);box-shadow:0 1px 4px rgba(0,0,0,.14);}',
+        '.clx-sel,.clx-q input{padding:8px 11px;border:1.5px solid var(--x-line);border-radius:10px;background:var(--x-card);color:var(--text-main,#0f172a);font-size:.8rem;font-weight:700;font-family:inherit;}',
+        '.clx-q{flex:1;min-width:180px;position:relative;}.clx-q input{width:100%;padding-left:32px;}.clx-q::before{content:"🔎";position:absolute;left:10px;top:50%;transform:translateY(-50%);font-size:.8rem;opacity:.7;}',
+        '.clx-chip{display:inline-flex;align-items:center;gap:6px;border:none;background:rgba(42,120,214,.13);color:var(--x-acc);border-radius:10px;padding:8px 11px;font-size:.76rem;font-weight:900;cursor:pointer;font-family:inherit;}',
+        '.clx-al{display:flex;gap:10px;align-items:flex-start;border-radius:14px;padding:11px 14px;margin-bottom:10px;font-size:.82rem;line-height:1.45;}',
+        '.clx-al b{font-weight:900;}.clx-al.warn{background:rgba(232,146,12,.12);border:1px solid rgba(232,146,12,.35);}.clx-al.bad{background:rgba(208,59,59,.1);border:1px solid rgba(208,59,59,.3);}.clx-al.ok{background:rgba(12,163,12,.1);border:1px solid rgba(12,163,12,.3);}',
+        '.clx-al .ds{display:flex;gap:5px;flex-wrap:wrap;margin-top:6px;}.clx-al .ds button{border:1px solid var(--x-line);background:var(--x-card);color:inherit;border-radius:8px;padding:3px 8px;font-size:.72rem;font-weight:800;cursor:pointer;font-family:inherit;}',
+        '.clx-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:12px;}',
+        '@media (max-width:1000px){.clx-kpis{grid-template-columns:repeat(2,minmax(0,1fr));}}',
+        '.clx-k{background:var(--x-card);border:1px solid var(--x-line);border-radius:15px;padding:12px 14px;box-shadow:var(--x-shadow);position:relative;overflow:hidden;min-width:0;}',
+        '.clx-k::before{content:"";position:absolute;left:0;top:12px;bottom:12px;width:3px;border-radius:0 3px 3px 0;background:var(--a);}',
+        '.clx-k > span{display:block;font-size:.62rem;font-weight:900;text-transform:uppercase;letter-spacing:.45px;color:var(--x-mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
+        '.clx-k b{display:block;font-size:1.45rem;font-weight:900;letter-spacing:-.5px;font-variant-numeric:tabular-nums;white-space:nowrap;margin-top:2px;}',
+        '.clx-k small{display:block;font-size:.7rem;font-weight:700;color:var(--x-mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
+        '.clx-k small.up{color:var(--x-ok);}.clx-k small.dn{color:var(--x-bad);}',
+        '.clx-k .meter{height:6px;border-radius:4px;background:var(--x-soft);overflow:hidden;margin-top:6px;}.clx-k .meter i{display:block;height:100%;border-radius:4px;}',
+        '.clx-row{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:12px;margin-bottom:12px;}',
+        '.clx-row.b{grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);}',
+        '@media (max-width:1000px){.clx-row,.clx-row.b{grid-template-columns:minmax(0,1fr);}}',
+        '.clx-card{background:var(--x-card);border:1px solid var(--x-line);border-radius:16px;box-shadow:var(--x-shadow);padding:13px 15px;min-width:0;}',
+        '.clx-card h3{margin:0;font-size:.9rem;font-weight:900;color:var(--text-main,#0f172a)!important;display:flex;align-items:center;gap:7px;}',
+        '.clx-card .sub{font-size:.7rem;color:var(--x-mute);font-weight:600;margin:2px 0 10px;}',
+        '.clx-chart svg{display:block;width:100%;overflow:visible;}',
+        '.clx-leg{display:flex;gap:12px;flex-wrap:wrap;font-size:.7rem;font-weight:800;color:var(--x-mute);margin-top:8px;}',
+        '.clx-leg span{display:inline-flex;align-items:center;gap:5px;}.clx-leg i{width:10px;height:10px;border-radius:3px;display:inline-block;}',
+        /* calendrier */
+        '.clx-cal{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:14px;}',
+        '.clx-m h4{margin:0 0 6px;font-size:.76rem;font-weight:900;text-transform:capitalize;color:var(--text-main,#0f172a)!important;}',
+        '.clx-g{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:3px;}',
+        '.clx-g .h{font-size:.58rem;font-weight:900;color:var(--x-mute);text-align:center;}',
+        '.clx-c{aspect-ratio:1/1;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:.66rem;font-weight:800;color:var(--x-mute);background:var(--x-soft);cursor:default;position:relative;border:2px solid transparent;}',
+        '.clx-c.ok{background:#0ca30c;color:#fff;cursor:pointer;}.clx-c.warn{background:#fab219;color:#3b2a00;cursor:pointer;}.clx-c.bad{background:#d03b3b;color:#fff;cursor:pointer;}.clx-c.none{background:#2a78d6;color:#fff;cursor:pointer;}.clx-c.part{background:#9085e9;color:#fff;cursor:pointer;}',
+        '.clx-c.miss{background:transparent;border:2px dashed #d03b3b;color:#d03b3b;}',
+        '.clx-c.today{box-shadow:0 0 0 2px var(--text-main,#0f172a);}.clx-c.sel{outline:3px solid var(--x-acc);outline-offset:1px;}',
+        '.clx-c.out{opacity:.25;}',
+        /* caissiers */
+        '.clx-tb{width:100%;border-collapse:collapse;font-size:.8rem;font-variant-numeric:tabular-nums;}',
+        '.clx-tb th{font-size:.6rem;text-transform:uppercase;letter-spacing:.4px;color:var(--x-mute);text-align:right;padding:6px;font-weight:900;white-space:nowrap;}',
+        '.clx-tb th:first-child,.clx-tb td:first-child{text-align:left;}',
+        '.clx-tb td{padding:8px 6px;border-top:1px solid var(--x-line);text-align:right;font-weight:800;white-space:nowrap;}',
+        '.clx-tb tr.click{cursor:pointer;}.clx-tb tr.click:hover td{background:var(--x-soft);}',
+        '.clx-av{width:28px;height:28px;border-radius:9px;background:linear-gradient(135deg,#123f5c,#1abc9c);color:#fff;font-size:.72rem;font-weight:900;display:inline-flex;align-items:center;justify-content:center;margin-right:8px;vertical-align:middle;}',
+        '.clx-st{display:flex;height:12px;gap:2px;border-radius:6px;overflow:hidden;margin:6px 0 8px;}.clx-st i{display:block;height:100%;}',
+        /* liste */
+        '.clx-lh{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:16px 0 10px;}',
+        '.clx-lh h3{margin:0;font-size:.95rem;font-weight:900;color:var(--text-main,#0f172a)!important;}',
+        '.clx-day{font-size:.68rem;font-weight:900;text-transform:uppercase;letter-spacing:.5px;color:var(--x-mute);margin:14px 2px 7px;display:flex;justify-content:space-between;gap:8px;}',
+        '.clx-it{display:grid;grid-template-columns:auto minmax(0,1.1fr) minmax(0,1fr) minmax(0,1fr) auto;gap:12px;align-items:center;background:var(--x-card);border:1px solid var(--x-line);border-left:4px solid var(--c);border-radius:14px;padding:11px 13px;margin-bottom:7px;cursor:pointer;box-shadow:var(--x-shadow);content-visibility:auto;contain-intrinsic-size:auto 86px;}',
+        '.clx-it:hover{border-color:var(--x-acc);border-left-color:var(--c);}',
+        '.clx-badge{display:inline-flex;align-items:center;gap:4px;font-size:.62rem;font-weight:900;border-radius:7px;padding:3px 8px;white-space:nowrap;}',
+        '.clx-badge.fin{background:rgba(12,163,12,.13);color:var(--x-ok);}.clx-badge.part{background:rgba(98,80,214,.14);color:var(--x-part);}',
+        '.clx-it .who{display:flex;align-items:center;min-width:0;}.clx-it .who b{display:block;font-size:.86rem;font-weight:900;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}.clx-it .who small{display:block;font-size:.7rem;color:var(--x-mute);font-weight:700;}',
+        '.clx-it .m > span{display:block;font-size:.6rem;font-weight:900;text-transform:uppercase;letter-spacing:.4px;color:var(--x-mute);}.clx-it .m b{display:block;font-size:.98rem;font-weight:900;font-variant-numeric:tabular-nums;}.clx-it .m small{display:block;font-size:.68rem;font-weight:700;color:var(--x-mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}',
+        '.clx-gp{display:inline-flex;align-items:center;gap:4px;white-space:nowrap;font-size:.74rem;font-weight:900;border-radius:8px;padding:3px 8px;}',
+        '.clx-gp.ok{background:rgba(12,163,12,.13);color:var(--x-ok);}.clx-gp.warn{background:rgba(232,146,12,.16);color:#b86e00;}.clx-gp.bad{background:rgba(208,59,59,.13);color:var(--x-bad);}.clx-gp.none{background:var(--x-soft);color:var(--x-mute);}',
+        'body.dark-mode .clx-gp.warn{color:#f0b046;}',
+        '.clx-acts{display:flex;gap:5px;}',
+        '.clx-acts button{width:34px;height:34px;border-radius:10px;border:1px solid var(--x-line);background:transparent;color:inherit;cursor:pointer;font-size:.9rem;}',
+        '.clx-acts button:hover{border-color:var(--x-acc);}',
+        '.clx-note{grid-column:2/-1;font-size:.74rem;color:var(--x-mute);font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:-4px;}',
+        '.clx-more{width:100%;border:1px dashed var(--x-line);background:transparent;color:var(--x-acc);border-radius:12px;padding:12px;font-weight:900;font-size:.82rem;cursor:pointer;font-family:inherit;}',
+        '.clx-empty{padding:40px 16px;text-align:center;color:var(--x-mute);font-weight:700;background:var(--x-card);border:1px dashed var(--x-line);border-radius:16px;}',
+        '.clx-empty b{display:block;font-size:2rem;margin-bottom:6px;}',
+        '#clx-tip{position:fixed;z-index:100001;pointer-events:none;background:rgba(15,23,42,.95);color:#fff;border-radius:10px;padding:7px 10px;font-size:.74rem;font-weight:600;line-height:1.45;opacity:0;transition:opacity .1s;max-width:260px;}#clx-tip.show{opacity:1;}',
+        '@media (max-width:760px){#clx-hero{padding:14px 14px 12px;border-radius:0 0 18px 18px;}#clx-hero h1{font-size:1.12rem;}#clx-hero .r1 .clx-hb span{display:none;}#clx-body{padding:12px 10px 0;}.clx-k b{font-size:1.2rem;}'
+        + '.clx-it{grid-template-columns:auto minmax(0,1fr) auto;gap:6px 10px;}.clx-it .m.c2,.clx-it .m.c3{grid-column:2/-1;display:flex;align-items:baseline;gap:8px;}.clx-it .m.c2 > span,.clx-it .m.c3 > span{display:inline;}.clx-it .clx-acts{grid-row:1;grid-column:3;}.clx-note{grid-column:1/-1;}.clx-q{min-width:100%;order:9;}}',
+        /* comptage dans la fiche détaillée */
+        '.clx-cc{margin-top:14px;border:1.5px solid var(--border-color,#e5e9f0);border-radius:12px;padding:10px 12px;}',
+        '.clx-cc h5{margin:0 0 8px;font-size:.74rem;font-weight:900;text-transform:uppercase;letter-spacing:.4px;color:var(--text-muted,#6b7280);}',
+        '.clx-cc .g{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:5px;font-size:.78rem;font-weight:800;}',
+        '.clx-cc .g div{background:rgba(15,23,42,.04);border-radius:8px;padding:5px 8px;display:flex;justify-content:space-between;gap:6px;}',
+        'body.dark-mode .clx-cc .g div{background:rgba(255,255,255,.06);}'
+    ].join('\n');
+    document.head.appendChild(css);
+
+    /* ───────────── Infobulle ───────────── */
+    var tip = null;
+    function showTip(h, x, y) { if (!tip) { tip = document.createElement('div'); tip.id = 'clx-tip'; document.body.appendChild(tip); } tip.innerHTML = h; tip.classList.add('show'); var w = tip.offsetWidth, hh = tip.offsetHeight, px = Math.min(innerWidth - w - 8, Math.max(8, x - w / 2)), py = y - hh - 12; if (py < 8) py = y + 16; tip.style.left = px + 'px'; tip.style.top = py + 'px'; }
+    function hideTip() { if (tip) tip.classList.remove('show'); }
+
+    /* ───────────── Rendu ───────────── */
+    function shell() {
+        var tab = $('tab-clotures'); if (!tab) return null;
+        var root = $('clx'); if (root) return root;
+        tab.classList.add('clx-on');
+        root = document.createElement('div'); root.id = 'clx';
+        root.innerHTML = '<div id="clx-hero"><div class="r1"><div><h1><i>🗓️</i>Clôtures de caisse</h1><p id="clx-sub"></p></div><span class="sp"></span>'
+            + '<button type="button" class="clx-hb" data-a="csv" title="Exporter les clôtures affichées (tableur)">⬇️ <span>Export CSV</span></button>'
+            + '<button type="button" class="clx-hb" data-a="report" title="Imprimer un rapport de la période">🖨️ <span>Rapport</span></button></div>'
+            + '<div class="clx-per" id="clx-per"></div><div class="clx-dates" id="clx-dates"></div></div>'
+            + '<div id="clx-body"></div>';
+        tab.insertBefore(root, tab.firstChild);
+        root.addEventListener('click', onClick);
+        root.addEventListener('input', onInput);
+        root.addEventListener('change', onInput);
+        return root;
+    }
+    var PER = [['0', 'Aujourd’hui'], ['7', '7 j'], ['30', '30 j'], ['90', '3 mois'], ['365', '12 mois'], ['all', 'Tout'], ['custom', '📆 Dates']];
+    function render() {
+        var root = shell(); if (!root) return;
+        hideTip();
+        var hist = load(), R = range(), F = filt(hist), now = new Date(), today = k(now);
+        $('clx-per').innerHTML = PER.map(function (p) { return '<button type="button" data-p="' + p[0] + '" class="' + (UI.period === p[0] ? 'on' : '') + '">' + p[1] + '</button>'; }).join('');
+        $('clx-dates').innerHTML = UI.period === 'custom' ? 'Du <input type="date" id="clx-from" value="' + esc(UI.from) + '"> au <input type="date" id="clx-to" value="' + esc(UI.to) + '">' : '';
+        var S = stats(hist, R.a, R.b), P = R.pa ? stats(hist, R.pa, R.pb) : null;
+        $('clx-sub').textContent = S.days + ' journée' + (S.days > 1 ? 's' : '') + ' · ' + (S.fin + S.part) + ' clôture' + (S.fin + S.part > 1 ? 's' : '') + ' · ' + R.label;
+        var cashiers = {}; hist.forEach(function (h) { cashiers[h.caissier || 'Inconnu'] = 1; });
+        var h = '<div class="clx-bar"><div class="clx-seg">' + [['', 'Toutes'], ['final', '🏁 Finales'], ['partiel', '⏸️ Intermédiaires']].map(function (t) { return '<button type="button" data-t="' + t[0] + '" class="' + (UI.type === t[0] ? 'on' : '') + '">' + t[1] + '</button>'; }).join('') + '</div>'
+            + '<select class="clx-sel" id="clx-cash" aria-label="Caissier"><option value="">👤 Tous les caissiers</option>' + Object.keys(cashiers).sort().map(function (c) { return '<option value="' + esc(c) + '"' + (UI.cashier === c ? ' selected' : '') + '>' + esc(c) + '</option>'; }).join('') + '</select>'
+            + (UI.day ? '<button type="button" class="clx-chip" data-a="noday">📅 ' + esc(dLabel(UI.day, true)) + ' ✕</button>' : '')
+            + '<div class="clx-q"><input id="clx-q" type="search" placeholder="Rechercher : caissier, note, date…" value="' + esc(UI.q) + '"></div></div>';
+        h += alerts(hist, R, today);
+        h += kpis(S, P);
+        h += '<div class="clx-row"><div class="clx-card"><h3>📈 Chiffre par journée</h3><div class="sub">Une journée = sa clôture finale (ou la dernière intermédiaire)</div><div class="clx-chart" id="clx-c1"></div><div class="clx-leg"><span><i style="background:#2a78d6"></i>Clôture finale</span><span><i style="background:#9085e9"></i>Seulement intermédiaire</span><span><i style="background:transparent;border:2px dashed #d03b3b"></i>Ventes sans clôture</span></div></div>'
+            + '<div class="clx-card"><h3>⚖️ Écarts de caisse</h3><div class="sub">Espèces + carte, clôtures finales comptées</div><div class="clx-chart" id="clx-c2"></div><div class="clx-leg"><span><i style="background:#0ca30c"></i>Juste</span><span><i style="background:#fab219"></i>≤ 2 €</span><span><i style="background:#d03b3b"></i>&gt; 2 €</span><span>▲ excédent · ▼ manque</span></div></div></div>';
+        h += '<div class="clx-row b"><div class="clx-card"><h3>🗓️ Calendrier des clôtures</h3><div class="sub">Touchez un jour pour voir ses clôtures</div><div id="clx-cal"></div>'
+            + '<div class="clx-leg"><span><i style="background:#0ca30c"></i>Caisse juste</span><span><i style="background:#fab219"></i>Petit écart</span><span><i style="background:#d03b3b"></i>Gros écart</span><span><i style="background:#2a78d6"></i>Non comptée</span><span><i style="background:#9085e9"></i>Intermédiaire seule</span><span><i style="border:2px dashed #d03b3b"></i>Ventes sans clôture</span></div></div>'
+            + '<div class="clx-card"><h3>👥 Par caissier</h3><div class="sub">Clôtures finales sur la période</div><div id="clx-cashiers"></div></div></div>';
+        h += '<div class="clx-lh"><h3>📋 Détail des clôtures</h3><span style="font-size:.74rem;color:var(--x-mute);font-weight:800">' + F.length + ' clôture' + (F.length > 1 ? 's' : '') + '</span><span style="flex:1"></span><div class="clx-seg"><button type="button" data-v="cards" class="' + (UI.view === 'cards' ? 'on' : '') + '">▦ Cartes</button><button type="button" data-v="table" class="' + (UI.view === 'table' ? 'on' : '') + '">☰ Tableau</button></div></div>';
+        h += '<div id="clx-list"></div>';
+        var foc = document.activeElement && document.activeElement.id === 'clx-q', pos = foc ? document.activeElement.selectionStart : 0;
+        $('clx-body').innerHTML = h;
+        if (foc) { var q = $('clx-q'); q.focus(); try { q.setSelectionRange(pos, pos); } catch (e) {} }
+        chartCa(S, R); chartGap(S, R); cal(S, R); cashTable(hist, R); list(F);
+    }
+    function alerts(hist, R, today) {
+        var out = '', D = days(hist), sdm = sd(), now = new Date();
+        if (!(D[today] && D[today].fin) && sdm[today]) out += '<div class="clx-al warn"><span>🏁</span><div><b>Clôture finale d’aujourd’hui pas encore faite</b> · ' + sdm[today] + ' vente' + (sdm[today] > 1 ? 's' : '') + ' enregistrée' + (sdm[today] > 1 ? 's' : '') + (D[today] ? ' · ' + D[today].all.length + ' clôture(s) intermédiaire(s)' : '') + '. Elle se fait dans COVO Pro → 🏁 Fin de poste.</div></div>';
+        var miss = Object.keys(sdm).filter(function (s) { return s !== today && inR(s, R.a, R.b) && !(D[s] && D[s].fin); }).sort().reverse();
+        if (miss.length) out += '<div class="clx-al bad"><span>⚠️</span><div><b>' + miss.length + ' journée' + (miss.length > 1 ? 's' : '') + ' avec des ventes sans clôture finale</b> sur la période :<div class="ds">' + miss.slice(0, 12).map(function (s) { return '<button type="button" data-day="' + s + '">' + esc(dLabel(s)) + ' · ' + sdm[s] + ' vente' + (sdm[s] > 1 ? 's' : '') + '</button>'; }).join('') + (miss.length > 12 ? '<span style="font-weight:800;font-size:.72rem;align-self:center">+' + (miss.length - 12) + '</span>' : '') + '</div></div></div>';
+        return out;
+    }
+    function delta(c, p) { if (p == null) return ''; if (!p) return c ? '<small class="up">▲ nouveau</small>' : '<small>—</small>'; var r = (c - p) / Math.abs(p); return '<small class="' + (Math.abs(r) < 0.005 ? '' : r > 0 ? 'up' : 'dn') + '">' + (r > 0 ? '▲ +' : r < 0 ? '▼ ' : '= ') + Math.round(Math.abs(r) * 100) + ' % vs période préc.</small>'; }
+    function kt(lbl, val, sub, col, extra) { return '<div class="clx-k" style="--a:' + col + '"><span>' + lbl + '</span><b>' + val + '</b>' + (sub || '') + (extra || '') + '</div>'; }
+    function kpis(S, P) {
+        var pctJust = S.counted ? Math.round(100 * S.just / S.counted) : null, eT = S.eEsp + S.eCb;
+        var col = function (v) { return Math.abs(v) < 0.01 ? 'var(--x-ok)' : v < 0 ? 'var(--x-bad)' : '#b86e00'; };
+        return '<div class="clx-kpis">'
+            + kt('Chiffre d’affaires', eur0(S.ca), delta(S.ca, P && P.ca), '#2a78d6')
+            + kt('Journées clôturées', S.days ? (S.days - (S.days - Object.keys(S.D).filter(function (s) { return S.D[s].fin; }).length)) + ' / ' + S.days : '0', '<small>' + S.fin + ' finale' + (S.fin > 1 ? 's' : '') + ' · ' + S.part + ' intermédiaire' + (S.part > 1 ? 's' : '') + '</small>', '#1baf7a')
+            + kt('Moyenne par journée', eur0(S.days ? S.ca / S.days : 0), delta(S.days ? S.ca / S.days : 0, P && P.days ? P.ca / P.days : null), '#6250d6')
+            + kt('Ventes', S.ventes.toLocaleString('fr-FR'), '<small>panier moyen ' + eur(S.ventes ? S.ca / S.ventes : 0) + '</small>', '#eb6834')
+            + kt('Écart espèces cumulé', '<span style="color:' + col(S.eEsp) + '">' + sgn(Math.round(S.eEsp * 100) / 100) + '</span>', '<small>manques ' + eur(S.mEsp) + ' · excédents ' + eur(S.pEsp) + '</small>', '#d03b3b')
+            + kt('Écart carte cumulé', '<span style="color:' + col(S.eCb) + '">' + sgn(Math.round(S.eCb * 100) / 100) + '</span>', '<small>sur ' + S.nCb + ' comptage' + (S.nCb > 1 ? 's' : '') + ' du terminal</small>', '#2a78d6')
+            + kt('Caisses justes', pctJust == null ? '—' : pctJust + ' %', '<small>' + S.just + ' / ' + S.counted + ' clôtures comptées · total ' + sgn(Math.round(eT * 100) / 100) + '</small>', '#0ca30c', pctJust == null ? '' : '<div class="meter"><i style="width:' + pctJust + '%;background:' + (pctJust >= 80 ? '#0ca30c' : pctJust >= 50 ? '#fab219' : '#d03b3b') + '"></i></div>')
+            + kt('Durée moyenne de poste', S.nDur ? durTxt(Math.round(S.dur / S.nDur)) : '—', '<small>de la prise de poste à la clôture</small>', '#eda100')
+            + '</div>';
+    }
+    function niceMax(m) { if (m <= 4) return 4; var p = Math.pow(10, Math.floor(Math.log10(m))), n = m / p; return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * p; }
+    function dayList(R, S) {
+        var out = [], a = new Date(R.a), b = new Date(R.b);
+        if (UI.period === 'all') { var ks = Object.keys(S.D).sort(); if (!ks.length) return out; a = dParse(ks[0]); }
+        a.setHours(12, 0, 0, 0); var guard = 0;
+        for (var d = new Date(a); d <= b && guard < 800; d.setDate(d.getDate() + 1), guard++) out.push(k(d));
+        return out.slice(-120);
+    }
+    function hover(svg, n, pl, bw, W, fn) {
+        function at(e) { var r = svg.getBoundingClientRect(), cx = e.clientX, i = Math.floor(((cx - r.left) * (W / r.width) - pl) / bw); if (i < 0 || i >= n) return hideTip(); var t = fn(i); if (!t) return hideTip(); showTip(t, cx, r.top + 8); }
+        svg.addEventListener('pointermove', at); svg.addEventListener('pointerdown', at); svg.addEventListener('pointerleave', hideTip);
+        svg.addEventListener('click', function (e) { var r = svg.getBoundingClientRect(), i = Math.floor(((e.clientX - r.left) * (W / r.width) - pl) / bw); if (i >= 0 && i < n && svg._days && svg._days[i]) { UI.day = svg._days[i]; render(); scrollList(); } });
+    }
+    function chartCa(S, R) {
+        var host = $('clx-c1'); if (!host) return; var L = dayList(R, S), sdm = sd();
+        if (!L.length || !Object.keys(S.D).length) { host.innerHTML = '<div class="clx-empty" style="padding:24px"><b>📊</b>Aucune clôture sur la période.</div>'; return; }
+        var W = Math.max(280, host.clientWidth || 600), H = 190, pl = 34, pb = 22, pt = 10, n = L.length, bw = (W - pl) / n, vals = L.map(function (s) { return S.D[s] ? S.D[s].ca : 0; }), mx = niceMax(Math.max.apply(null, vals.concat([1]))), s = '';
+        for (var g = 0; g <= 3; g++) { var y = pt + (H - pt - pb) * (1 - g / 3); s += '<line x1="' + pl + '" x2="' + W + '" y1="' + y + '" y2="' + y + '" stroke="var(--x-line)"/><text x="' + (pl - 5) + '" y="' + (y + 3.5) + '" text-anchor="end" font-size="9.5" font-weight="700" fill="var(--x-mute)">' + Math.round(mx * g / 3).toLocaleString('fr-FR') + '</text>'; }
+        var gp = Math.min(4, bw * .25), step = Math.max(1, Math.ceil(n / 7));
+        L.forEach(function (d, i) {
+            var x = pl + i * bw, v = vals[i], o = S.D[d];
+            if (o) { var bh = Math.max(2, (H - pt - pb) * v / mx); s += '<rect x="' + (x + gp / 2).toFixed(1) + '" y="' + (H - pb - bh).toFixed(1) + '" width="' + Math.max(1, bw - gp).toFixed(1) + '" height="' + bh.toFixed(1) + '" rx="' + Math.min(4, (bw - gp) / 2).toFixed(1) + '" fill="' + (o.fin ? '#2a78d6' : '#9085e9') + '"' + (UI.day === d ? ' stroke="var(--text-main)" stroke-width="2"' : '') + '/>'; }
+            else if (sdm[d]) s += '<rect x="' + (x + gp / 2 + .5).toFixed(1) + '" y="' + (H - pb - 14) + '" width="' + Math.max(1, bw - gp - 1).toFixed(1) + '" height="13" rx="3" fill="none" stroke="#d03b3b" stroke-width="1.5" stroke-dasharray="3 2"/>';
+            if (i % step === 0 || (i === n - 1 && (n - 1) % step >= step / 2)) { var dd = dParse(d); s += '<text x="' + (x + bw / 2).toFixed(1) + '" y="' + (H - 6) + '" text-anchor="middle" font-size="9" font-weight="700" fill="var(--x-mute)">' + dd.getDate() + '/' + (dd.getMonth() + 1) + '</text>'; }
+        });
+        host.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" height="' + H + '" role="img" aria-label="Chiffre par journée">' + s + '</svg>';
+        var svg = host.querySelector('svg'); svg._days = L.map(function (d) { return S.D[d] ? d : null; });
+        hover(svg, n, pl, bw, W, function (i) { var d = L[i], o = S.D[d]; if (!o) return sdm[d] ? '<b>' + dLabel(d, true) + '</b><br>⚠️ ' + sdm[d] + ' vente(s) sans clôture' : '<b>' + dLabel(d, true) + '</b><br>Pas d’activité'; return '<b>' + dLabel(d, true) + '</b><br>' + eur(o.ca) + ' · ' + o.ventes + ' ventes<br>' + (o.fin ? '🏁 ' + esc(o.fin.caissier || '') + ' à ' + new Date(o.fin.datetime).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : '⏸️ seulement intermédiaire'); });
+    }
+    function chartGap(S, R) {
+        var host = $('clx-c2'); if (!host) return; var L = dayList(R, S).filter(function (d) { return S.D[d] && S.D[d].fin; });
+        if (!L.length) { host.innerHTML = '<div class="clx-empty" style="padding:24px"><b>⚖️</b>Aucune clôture finale sur la période.</div>'; return; }
+        var W = Math.max(260, host.clientWidth || 420), H = 190, pl = 34, pb = 22, pt = 10, n = L.length, bw = (W - pl) / n;
+        var G = L.map(function (d) { return S.D[d].gap; }), mx = Math.max(2, Math.max.apply(null, G.map(function (g) { return Math.abs(g || 0); })));
+        mx = niceMax(mx); var mid = pt + (H - pt - pb) / 2, half = (H - pt - pb) / 2, s = '';
+        [-1, -0.5, 0, 0.5, 1].forEach(function (f) { var y = mid - half * f; s += '<line x1="' + pl + '" x2="' + W + '" y1="' + y + '" y2="' + y + '" stroke="' + (f === 0 ? 'var(--x-mute)' : 'var(--x-line)') + '"' + (f === 0 ? ' stroke-width="1.2"' : '') + '/><text x="' + (pl - 5) + '" y="' + (y + 3.5) + '" text-anchor="end" font-size="9" font-weight="700" fill="var(--x-mute)">' + (f > 0 ? '+' : f < 0 ? '−' : '') + (Math.abs(mx * f) % 1 ? Math.abs(mx * f).toFixed(1) : Math.abs(mx * f)) + '</text>'; });
+        var gp = Math.min(4, bw * .28), step = Math.max(1, Math.ceil(n / 7));
+        L.forEach(function (d, i) {
+            var x = pl + i * bw, g = G[i], c = g == null ? '#2a78d6' : Math.abs(g) < 0.01 ? '#0ca30c' : Math.abs(g) <= 2 ? '#fab219' : '#d03b3b';
+            if (g == null) s += '<circle cx="' + (x + bw / 2).toFixed(1) + '" cy="' + mid + '" r="3" fill="none" stroke="#2a78d6" stroke-width="1.5"/>';
+            else if (Math.abs(g) < 0.01) s += '<circle cx="' + (x + bw / 2).toFixed(1) + '" cy="' + mid + '" r="' + Math.min(5, Math.max(3, bw / 4)).toFixed(1) + '" fill="#0ca30c"/>';
+            else { var bh = Math.max(2, half * Math.min(1, Math.abs(g) / mx)); s += '<rect x="' + (x + gp / 2).toFixed(1) + '" y="' + (g > 0 ? mid - bh : mid).toFixed(1) + '" width="' + Math.max(1, bw - gp).toFixed(1) + '" height="' + bh.toFixed(1) + '" rx="' + Math.min(3, (bw - gp) / 2).toFixed(1) + '" fill="' + c + '"/>'; }
+            if (i % step === 0 || (i === n - 1 && (n - 1) % step >= step / 2)) { var dd = dParse(d); s += '<text x="' + (x + bw / 2).toFixed(1) + '" y="' + (H - 6) + '" text-anchor="middle" font-size="9" font-weight="700" fill="var(--x-mute)">' + dd.getDate() + '/' + (dd.getMonth() + 1) + '</text>'; }
+        });
+        host.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" height="' + H + '" role="img" aria-label="Écarts de caisse par journée">' + s + '</svg>';
+        var svg = host.querySelector('svg'); svg._days = L;
+        hover(svg, n, pl, bw, W, function (i) { var f = S.D[L[i]].fin, g = G[i]; return '<b>' + dLabel(L[i], true) + '</b><br>' + (g == null ? 'Caisse non comptée' : (Math.abs(g) < 0.01 ? '✅ Caisse juste' : (g < 0 ? '▼ Manque ' : '▲ Excédent ') + eur(Math.abs(g)))) + '<br>💵 ' + (f.ecartEsp == null ? '—' : sgn(+f.ecartEsp)) + ' · 💳 ' + (f.ecartCb == null ? '—' : sgn(+f.ecartCb)) + (f.note ? '<br>💬 ' + esc(f.note) : ''); });
+    }
+    function cal(S, R) {
+        var host = $('clx-cal'); if (!host) return; var sdm = sd(), today = k(new Date());
+        var end = new Date(R.b > new Date() ? new Date() : R.b), start = UI.period === 'all' ? new Date(end.getFullYear(), end.getMonth() - 2, 1) : new Date(R.a);
+        if ((end - start) / 864e5 > 100) start = new Date(end.getFullYear(), end.getMonth() - 2, 1);
+        var months = [], m = new Date(start.getFullYear(), start.getMonth(), 1);
+        while (m <= end && months.length < 4) { months.push(new Date(m)); m.setMonth(m.getMonth() + 1); }
+        host.innerHTML = '<div class="clx-cal">' + months.map(function (mm) {
+            var first = new Date(mm), off = (first.getDay() + 6) % 7, nd = new Date(mm.getFullYear(), mm.getMonth() + 1, 0).getDate(), cells = '';
+            for (var i = 0; i < off; i++) cells += '<span></span>';
+            for (var dd = 1; dd <= nd; dd++) {
+                var ds = k(new Date(mm.getFullYear(), mm.getMonth(), dd)), o = S.D[ds], c = '', t = '';
+                if (o) { c = o.fin ? (o.gap == null ? 'none' : lvl(o.gap)) : 'part'; t = dLabel(ds, true) + ' · ' + eur(o.ca) + (o.fin ? (o.gap == null ? ' · non comptée' : Math.abs(o.gap) < 0.01 ? ' · juste' : ' · écart ' + sgn(o.gap)) : ' · intermédiaire seulement'); }
+                else if (sdm[ds] && ds !== today && ds <= today) { c = 'miss'; t = dLabel(ds, true) + ' · ' + sdm[ds] + ' vente(s) sans clôture'; }
+                var outR = !inR(ds, R.a, R.b) && UI.period !== 'all';
+                cells += '<div class="clx-c ' + c + (ds === today ? ' today' : '') + (UI.day === ds ? ' sel' : '') + (outR ? ' out' : '') + '"' + (o || c === 'miss' ? ' data-day="' + ds + '"' : '') + ' title="' + esc(t) + '">' + dd + '</div>';
+            }
+            return '<div class="clx-m"><h4>' + mm.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' }) + '</h4><div class="clx-g">' + ['L', 'M', 'M', 'J', 'V', 'S', 'D'].map(function (x) { return '<span class="h">' + x + '</span>'; }).join('') + cells + '</div></div>';
+        }).join('') + '</div>';
+    }
+    function cashTable(hist, R) {
+        var host = $('clx-cashiers'); if (!host) return; var C = {};
+        hist.forEach(function (h) { if (h.partiel || !inR(dayOf(h), R.a, R.b)) return; var n = h.caissier || 'Inconnu', o = C[n] || (C[n] = { n: n, nb: 0, ca: 0, e: 0, just: 0, counted: 0, dur: 0, nd: 0 }); o.nb++; o.ca += +h.totalJour || 0; var g = gap(h); if (g != null) { o.e += g; o.counted++; if (Math.abs(g) < 0.01) o.just++; } var m = durMin(h); if (m != null) { o.dur += m; o.nd++; } });
+        var A = Object.keys(C).map(function (x) { return C[x]; }).sort(function (a, b) { return b.ca - a.ca; });
+        if (!A.length) { host.innerHTML = '<div class="clx-empty" style="padding:24px"><b>👥</b>Aucune clôture finale sur la période.</div>'; return; }
+        var tot = A.reduce(function (s, o) { return s + o.ca; }, 0), cols = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#6250d6', '#008300', '#e34948'];
+        host.innerHTML = '<div class="clx-st">' + A.map(function (o, i) { return '<i style="width:' + (tot ? 100 * o.ca / tot : 0) + '%;background:' + cols[i % 8] + '" title="' + esc(o.n) + ' · ' + eur(o.ca) + '"></i>'; }).join('') + '</div>'
+            + '<div style="overflow-x:auto"><table class="clx-tb"><thead><tr><th>Caissier</th><th>Clôtures</th><th>Chiffre</th><th>Écart cumulé</th><th>Justes</th><th>Durée moy.</th></tr></thead><tbody>'
+            + A.map(function (o, i) { var pj = o.counted ? Math.round(100 * o.just / o.counted) : null; return '<tr class="click" data-cash="' + esc(o.n) + '"><td><span class="clx-av" style="background:' + cols[i % 8] + '">' + esc(o.n.charAt(0).toUpperCase()) + '</span>' + esc(o.n) + '</td><td>' + o.nb + '</td><td>' + eur0(o.ca) + '</td><td style="color:' + (Math.abs(o.e) < 0.01 ? 'var(--x-ok)' : o.e < 0 ? 'var(--x-bad)' : '#b86e00') + '">' + sgn(Math.round(o.e * 100) / 100) + '</td><td>' + (pj == null ? '—' : pj + ' %') + '</td><td>' + (o.nd ? durTxt(Math.round(o.dur / o.nd)) : '—') + '</td></tr>'; }).join('') + '</tbody></table></div>';
+    }
+    function gp(v, lbl) { var l = lvl(v); return '<span class="clx-gp ' + l + '">' + (v == null ? '— non compté' : Math.abs(v) < 0.01 ? '✅ juste' : (v < 0 ? '▼ ' : '▲ ') + eur(Math.abs(v))) + '</span>'; }
+    function list(F) {
+        var host = $('clx-list'); if (!host) return;
+        if (!F.length) { host.innerHTML = '<div class="clx-empty"><b>📂</b>Aucune clôture ne correspond.</div>'; return; }
+        var S = F.slice().sort(function (a, b) { var d = dayOf(b).localeCompare(dayOf(a)); return d || String(b.datetime).localeCompare(String(a.datetime)); }), adm = admin();
+        if (UI.view === 'table') {
+            host.innerHTML = '<div class="clx-card" style="padding:4px 8px;overflow-x:auto"><table class="clx-tb"><thead><tr><th>Journée</th><th>Type</th><th>Caissier</th><th>Chiffre</th><th>Ventes</th><th>Espèces att. / reçu</th><th>Carte att. / reçu</th><th>Écart total</th><th></th></tr></thead><tbody>'
+                + S.slice(0, UI.lim).map(function (h) { var g = gap(h); return '<tr class="click" data-id="' + esc(h.id) + '"><td>' + esc(dLabel(dayOf(h))) + ' <span style="color:var(--x-mute);font-weight:700">' + new Date(h.datetime).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) + '</span></td><td>' + (h.partiel ? '<span class="clx-badge part">⏸️ Interm.</span>' : '<span class="clx-badge fin">🏁 Finale</span>') + '</td><td>' + esc(h.caissier || '—') + '</td><td>' + eur(h.totalJour) + '</td><td>' + (h.nbVentes || 0) + '</td><td>' + eur(h.theorEsp) + ' / ' + (h.recuEsp == null ? '—' : eur(h.recuEsp)) + '</td><td>' + eur(h.theorCb) + ' / ' + (h.recuCb == null ? '—' : eur(h.recuCb)) + '</td><td>' + gp(g) + '</td><td><div class="clx-acts" style="justify-content:flex-end"><button type="button" data-print="' + esc(h.id) + '" title="Imprimer le ticket">🖨️</button>' + (adm ? '<button type="button" data-edit="' + esc(h.id) + '" title="Modifier">✏️</button><button type="button" data-del="' + esc(h.id) + '" title="Supprimer">🗑️</button>' : '') + '</div></td></tr>'; }).join('') + '</tbody></table></div>'
+                + (S.length > UI.lim ? '<button type="button" class="clx-more" data-a="more">Afficher plus · ' + (S.length - UI.lim) + '</button>' : '');
+            return;
+        }
+        var out = '', last = '';
+        S.slice(0, UI.lim).forEach(function (h) {
+            var d = dayOf(h), g = gap(h), m = durMin(h), c = h.partiel ? '#9085e9' : lvl(g) === 'ok' ? '#0ca30c' : lvl(g) === 'warn' ? '#fab219' : lvl(g) === 'bad' ? '#d03b3b' : '#2a78d6';
+            if (d !== last) { last = d; var cnt = S.filter(function (x) { return dayOf(x) === d; }).length; out += '<div class="clx-day"><span>' + esc(dLabel(d, true)) + '</span><span>' + cnt + ' clôture' + (cnt > 1 ? 's' : '') + '</span></div>'; }
+            var t = new Date(h.datetime);
+            out += '<div class="clx-it" style="--c:' + c + '" data-id="' + esc(h.id) + '">'
+                + '<div>' + (h.partiel ? '<span class="clx-badge part">⏸️ Interm.</span>' : '<span class="clx-badge fin">🏁 Finale</span>') + '</div>'
+                + '<div class="who"><span class="clx-av">' + esc(String(h.caissier || '?').charAt(0).toUpperCase()) + '</span><div style="min-width:0"><b>' + esc(h.caissier || 'Inconnu') + '</b><small>' + (h.prisePoste ? esc(h.prisePoste) + ' → ' : '') + t.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) + (m != null ? ' · ' + durTxt(m) : '') + (h.fondCaisse ? ' · fond ' + eur0(h.fondCaisse) : '') + '</small></div></div>'
+                + '<div class="m c2"><span>Chiffre</span><b>' + eur(h.totalJour) + '</b><small>' + (h.nbVentes || 0) + ' vente' + ((h.nbVentes || 0) > 1 ? 's' : '') + (h.nbRetours ? ' · ' + h.nbRetours + ' retour(s)' : '') + '</small></div>'
+                + '<div class="m c3"><span>Écart de caisse</span><b>' + gp(g) + '</b><small>💵 ' + (h.ecartEsp == null ? '—' : sgn(+h.ecartEsp)) + ' · 💳 ' + (h.ecartCb == null ? '—' : sgn(+h.ecartCb)) + '</small></div>'
+                + '<div class="clx-acts"><button type="button" data-print="' + esc(h.id) + '" title="Imprimer le ticket de clôture">🖨️</button>' + (adm ? '<button type="button" data-edit="' + esc(h.id) + '" title="Modifier">✏️</button><button type="button" data-del="' + esc(h.id) + '" title="Supprimer">🗑️</button>' : '') + '</div>'
+                + (h.note ? '<div class="clx-note">💬 ' + esc(h.note) + '</div>' : '')
+                + '</div>';
+        });
+        if (S.length > UI.lim) out += '<button type="button" class="clx-more" data-a="more">Afficher plus · ' + (S.length - UI.lim) + ' clôtures</button>';
+        host.innerHTML = out;
+    }
+    function scrollList() { var l = $('clx-list'); if (l && l.scrollIntoView) l.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+
+    /* ───────────── Interactions ───────────── */
+    var qT = 0;
+    function onInput(e) {
+        var t = e.target;
+        if (t.id === 'clx-q' && e.type === 'input') { UI.q = t.value; UI.lim = 40; clearTimeout(qT); qT = setTimeout(render, 160); return; }
+        if (t.id === 'clx-cash' && e.type === 'change') { UI.cashier = t.value; render(); return; }
+        if ((t.id === 'clx-from' || t.id === 'clx-to') && e.type === 'change') { UI[t.id === 'clx-from' ? 'from' : 'to'] = t.value; render(); return; }
+    }
+    function onClick(e) {
+        var b = e.target.closest('[data-p],[data-t],[data-v],[data-a],[data-day],[data-cash],[data-print],[data-edit],[data-del],[data-id]'); if (!b) return;
+        var x;
+        if ((x = b.getAttribute('data-print'))) { e.stopPropagation(); if (window._clotPrintTicket) window._clotPrintTicket(x); return; }
+        if ((x = b.getAttribute('data-edit'))) { e.stopPropagation(); if (window._clotOpenEdit) window._clotOpenEdit(x); return; }
+        if ((x = b.getAttribute('data-del'))) { e.stopPropagation(); if (window._clotDelete) window._clotDelete(x); return; }
+        if ((x = b.getAttribute('data-p'))) { UI.period = x; UI.day = ''; UI.lim = 40; if (x === 'custom' && !UI.from) { var t0 = new Date(); UI.to = k(t0); t0.setDate(t0.getDate() - 29); UI.from = k(t0); } save(); render(); return; }
+        if (b.hasAttribute('data-t')) { UI.type = b.getAttribute('data-t'); render(); return; }
+        if ((x = b.getAttribute('data-v'))) { UI.view = x; save(); render(); return; }
+        if ((x = b.getAttribute('data-day'))) { UI.day = x; var R = range(); if (!inR(x, R.a, R.b)) { UI.period = 'all'; } render(); scrollList(); return; }
+        if ((x = b.getAttribute('data-cash'))) { UI.cashier = UI.cashier === x ? '' : x; render(); return; }
+        if ((x = b.getAttribute('data-a'))) { if (x === 'more') { UI.lim += 60; render(); } else if (x === 'noday') { UI.day = ''; render(); } else if (x === 'csv') csv(); else if (x === 'report') report(); return; }
+        if ((x = b.getAttribute('data-id'))) { if (window._clotShowDetail) window._clotShowDetail(x); return; }
+    }
+    function csv() {
+        var F = filt(load()).sort(function (a, b) { return String(b.datetime).localeCompare(String(a.datetime)); });
+        var rows = [['Journée', 'Heure clôture', 'Type', 'Caissier', 'Prise de poste', 'Durée', 'Fond de caisse', 'Ventes', 'Retours', 'Chiffre du jour', 'Espèces attendues', 'Espèces reçues', 'Écart espèces', 'Carte attendue', 'Carte reçue', 'Écart carte', 'Écart total', 'Note', 'Référence']];
+        F.forEach(function (h) { var m = durMin(h), g = gap(h); rows.push([dayOf(h), new Date(h.datetime).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }), h.partiel ? 'Intermédiaire' : 'Finale', h.caissier || '', h.prisePoste || '', m == null ? '' : durTxt(m), h.fondCaisse || 0, h.nbVentes || 0, h.nbRetours || 0, h.totalJour || 0, h.theorEsp || 0, h.recuEsp == null ? '' : h.recuEsp, h.ecartEsp == null ? '' : h.ecartEsp, h.theorCb || 0, h.recuCb == null ? '' : h.recuCb, h.ecartCb == null ? '' : h.ecartCb, g == null ? '' : g, h.note || '', h.id || '']); });
+        var out = '﻿' + rows.map(function (r) { return r.map(function (c) { c = typeof c === 'number' ? String(c).replace('.', ',') : String(c == null ? '' : c); return /[;"\n]/.test(c) ? '"' + c.replace(/"/g, '""') + '"' : c; }).join(';'); }).join('\r\n');
+        var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([out], { type: 'text/csv;charset=utf-8' })); a.download = 'clotures_' + k(new Date()) + '.csv'; document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 800);
+        try { showScanToast('⬇️ ' + F.length + ' clôtures exportées', 'success'); } catch (e) {}
+    }
+    function report() {
+        var hist = load(), R = range(), S = stats(hist, R.a, R.b), F = filt(hist).filter(function (h) { return !h.partiel; }).sort(function (a, b) { return dayOf(a).localeCompare(dayOf(b)); });
+        var shop = ''; try { shop = (JSON.parse(localStorage.getItem('covo_settings') || '{}') || {}).shopName || ''; } catch (e) {}
+        var rows = F.map(function (h) { var g = gap(h); return '<tr><td>' + esc(dParse(dayOf(h)).toLocaleDateString('fr-FR', { weekday: 'short', day: '2-digit', month: '2-digit' })) + '</td><td>' + esc(h.caissier || '') + '</td><td class="r">' + eur(h.totalJour) + '</td><td class="r">' + (h.nbVentes || 0) + '</td><td class="r">' + (h.ecartEsp == null ? '—' : sgn(+h.ecartEsp)) + '</td><td class="r">' + (h.ecartCb == null ? '—' : sgn(+h.ecartCb)) + '</td><td class="r"><b>' + (g == null ? '—' : sgn(g)) + '</b></td><td>' + esc(h.note || '') + '</td></tr>'; }).join('');
+        var w = window.open('', 'clxreport'); if (!w) { try { showScanToast('Autorisez les fenêtres pour imprimer le rapport', 'error'); } catch (e) {} return; }
+        w.document.write('<!DOCTYPE html><html lang="fr"><head><meta charset="utf-8"><title>Rapport des clôtures</title><style>body{font-family:system-ui,Arial,sans-serif;margin:24px;color:#0f172a}h1{margin:0;font-size:20px}p{margin:4px 0 14px;color:#555;font-size:12px}.k{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px}.k div{border:1px solid #ddd;border-radius:8px;padding:8px}.k span{display:block;font-size:10px;text-transform:uppercase;color:#666;font-weight:700}.k b{font-size:16px}table{width:100%;border-collapse:collapse;font-size:11px}th,td{border-bottom:1px solid #e5e5e5;padding:5px 4px;text-align:left}th{background:#f3f5f8;font-size:10px;text-transform:uppercase}.r{text-align:right}button{margin-top:14px;padding:10px 16px;font-weight:700}@media print{button{display:none}}</style></head><body>'
+            + '<h1>Rapport des clôtures de caisse' + (shop ? ' — ' + esc(shop) : '') + '</h1><p>Période : ' + esc(R.label) + (UI.cashier ? ' · caissier : ' + esc(UI.cashier) : '') + ' · édité le ' + new Date().toLocaleString('fr-FR') + '</p>'
+            + '<div class="k"><div><span>Chiffre d’affaires</span><b>' + eur(S.ca) + '</b></div><div><span>Journées</span><b>' + S.days + '</b></div><div><span>Écart espèces</span><b>' + sgn(Math.round(S.eEsp * 100) / 100) + '</b></div><div><span>Écart carte</span><b>' + sgn(Math.round(S.eCb * 100) / 100) + '</b></div></div>'
+            + '<table><thead><tr><th>Jour</th><th>Caissier</th><th class="r">Chiffre</th><th class="r">Ventes</th><th class="r">Écart esp.</th><th class="r">Écart carte</th><th class="r">Écart total</th><th>Note</th></tr></thead><tbody>' + rows + '</tbody></table>'
+            + '<button onclick="window.print()">🖨️ Imprimer / Enregistrer en PDF</button></body></html>');
+        w.document.close();
+    }
+
+    /* ───────────── Fiche détaillée : comptage billets et pièces ───────────── */
+    function wrapDetail() {
+        if (typeof window._clotShowDetail !== 'function') return;
+        var o = window._clotShowDetail;
+        window._clotShowDetail = function (id) {
+            var r = o.apply(this, arguments);
+            try {
+                var h = load().filter(function (x) { return x.id === id; })[0], host = $('clot-detail-caisse'); if (!h || !host) return r;
+                var old = $('clx-cc'); if (old) old.remove();
+                var parts = [];
+                if (h.tiroirCompte != null) parts.push('<div class="g"><div><span>Tiroir compté</span><b>' + eur(h.tiroirCompte) + '</b></div>' + (h.fondDeduit ? '<div><span>Fond déduit</span><b>− ' + eur(h.fondCaisse) + '</b></div>' : '') + '</div>');
+                if (h.detailEspeces && Object.keys(h.detailEspeces).length) parts.push('<div class="g" style="margin-top:6px">' + Object.keys(h.detailEspeces).map(Number).sort(function (a, b) { return b - a; }).map(function (v) { var q = h.detailEspeces[v]; return '<div><span>' + q + ' × ' + (v >= 1 ? v + ' €' : Math.round(v * 100) + ' c') + '</span><b>' + eur(q * v) + '</b></div>'; }).join('') + '</div>');
+                var m = durMin(h); if (m != null) parts.push('<div style="font-size:.78rem;font-weight:700;margin-top:8px">⏱️ Durée du poste : ' + durTxt(m) + '</div>');
+                if (parts.length) { var div = document.createElement('div'); div.className = 'clx-cc'; div.id = 'clx-cc'; div.innerHTML = '<h5>🧮 Comptage de la caisse</h5>' + parts.join(''); host.parentNode.insertBefore(div, host.nextSibling); }
+            } catch (e) {}
+            return r;
+        };
+    }
+
+    /* ───────────── Branchement ───────────── */
+    function boot() {
+        if (!$('tab-clotures') || typeof window.renderCloturesTab !== 'function') return setTimeout(boot, 300);
+        window._clotLegacyRender = window.renderCloturesTab;
+        window.renderCloturesTab = function () { try { render(); } catch (e) { console.warn('[Clôtures]', e); try { $('tab-clotures').classList.remove('clx-on'); window._clotLegacyRender(); } catch (er) {} } };
+        wrapDetail();
+        render();
+        var rt = 0; window.addEventListener('resize', function () { clearTimeout(rt); rt = setTimeout(function () { var R = range(), S = stats(load(), R.a, R.b); chartCa(S, R); chartGap(S, R); }, 150); });
+        window.addEventListener('storage', function (e) { if (e.key === 'covo_caisse_historique') render(); });
+        document.addEventListener('visibilitychange', function () { if (!document.hidden) { SD.at = 0; render(); } });
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+})();
+</script>
 </body>
 </html>
