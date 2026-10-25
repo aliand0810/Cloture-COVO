@@ -2757,7 +2757,7 @@ function _cpApplyRestoreCore(data) {
     var isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
     var _cpWasInstalled = false;
     try { _cpWasInstalled = localStorage.getItem('covo_pwa_installed_cloturespro') === '1'; } catch(e) {}
-    if (isStandalone) { try { localStorage.setItem('covo_pwa_installed_cloturespro', '1'); } catch(e) {} }
+    if (isStandalone) { try { localStorage.setItem('covo_pwa_installed_cloturespro', '1'); localStorage.setItem('covo_pwa_proto_cloturespro', '1'); } catch(e) {} }
     // Application déjà installée sur le bureau (détectée cette session en mode standalone, ou lors
     // d'une session précédente via l'évènement "appinstalled" ci-dessous) : ne jamais réafficher le
     // bouton/icône "Installer", même si l'app est ouverte dans un onglet de navigateur classique.
