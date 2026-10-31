@@ -3546,5 +3546,293 @@ window.cpMaybeShowInstallBanner = function(){
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
 })();
 </script>
+<script>
+/* ═══ COVO — GUIDES « i » : un guide complet, pas à pas, sur chaque onglet / section ═══ */
+(function () {
+    'use strict';
+    /* Éléments communs aux applications satellites (barre du haut + Google Drive) */
+    var HDR_ZONES = [
+        ['👤', 'Utilisateur connecté', 'Votre nom et votre rôle (admin, caissier). Les droits sont les mêmes que dans COVO Pro.'],
+        ['💾', 'Sauvegarde Google Drive', 'Le bouton [[💾]] envoie toutes les modifications sur Google Drive. Il affiche ✓ quand tout est sauvegardé, ou le nombre de modifications en attente.'],
+        ['☁️', 'Google Drive', 'Ouvre les réglages de connexion Google Drive (même Client ID que COVO Pro).'],
+        ['📲', 'Installer', 'Installe l’application sur l’ordinateur ou le téléphone (icône sur le bureau / l’écran d’accueil).'],
+        ['🌙', 'Thème', 'Bascule entre le mode clair et le mode sombre.'],
+        ['⚠️', 'Bandeau d’anomalie (en bas)', 'S’affiche si Google Drive n’est pas connecté : [[🔄 Se reconnecter]] relance la connexion, [[ⓘ]] donne le détail. Rien n’est perdu : les modifications restent sur l’appareil et partent dès la reconnexion.']
+    ];
+    var HDR_STEP = { t: 'Sauvegarder et rester synchronisé avec COVO Pro', s: [
+        'Les données (produits, ventes, clients…) sont **partagées avec COVO Pro** et les autres applications COVO : une modification faite ici y apparaît aussi.',
+        'Chaque modification est enregistrée tout de suite sur l’appareil.',
+        'Cliquez sur [[💾]] pour envoyer immédiatement sur Google Drive (le chiffre indique les modifications en attente).',
+        'Si le bandeau « ⚠️ Anomalie : non connecté » apparaît, cliquez sur [[🔄 Se reconnecter]] ; si le Client ID manque, ouvrez [[☁️ Google Drive]] et collez le même Client ID que dans COVO Pro.',
+        'Au premier lancement, la fenêtre « Anomalie » propose aussi [[Continuer sans connexion]] : vous travaillez alors en local, la sauvegarde reprendra à la reconnexion.'] };
+    var HDR_FAQ = [['Je ne vois pas les dernières modifications faites dans COVO Pro ?', 'Rafraîchissez la page. Sur un autre appareil, la mise à jour passe par Google Drive : vérifiez que [[💾]] affiche ✓ sur l’appareil d’origine.']];
+    var APP = { key: 'clot', name: 'Clôtures Pro', guides: [
+    {
+        id: 'general', grp: 'Démarrer', ic: '🗓️', t: 'Prise en main de Clôtures Pro',
+        sub: 'Le suivi des clôtures de caisse (fins de poste).',
+        intro: '**Clôtures Pro** rassemble toutes les clôtures faites avec le bouton **🏁 Fin de poste** de COVO Pro : chiffre par journée, écarts de caisse (espèces et carte), calendrier, résultats par caissier et détail de chaque clôture. La clôture elle-même se fait toujours dans COVO Pro.',
+        zones: [
+            ['🛠️', 'En-tête', 'Nombre de journées et de clôtures sur la période ; [[⬇️ Export CSV]] (clôtures affichées) et [[🖨️ Rapport]] (rapport imprimable de la période).'],
+            ['📅', 'Période', '[[Aujourd’hui]], [[7 j]], [[30 j]], [[3 mois]], [[12 mois]], [[Tout]] ou [[📆 Dates]] (plage libre).'],
+            ['🏷️', 'Filtres', '[[Toutes]], [[🏁 Finales]], [[⏸️ Intermédiaires]], un caissier, et une recherche (caissier, note, date).'],
+            ['📊', 'Indicateurs', 'Chiffre d’affaires, journées clôturées (finales / intermédiaires), moyenne par journée, ventes et panier moyen, écart espèces cumulé (manques / excédents), écart carte cumulé, caisses justes, durée moyenne de poste (de la prise de poste à la clôture).']
+        ].concat(HDR_ZONES),
+        steps: [
+            { t: 'Faire une clôture (dans COVO Pro)', s: ['Dans COVO Pro, cliquez sur [[🏁 Fin de poste]].', 'Comptez les espèces du tiroir, saisissez le total du terminal carte, contrôlez les stocks.', 'Choisissez [[⏸️ Clôture intermédiaire]] (changement de caissier) ou [[🏁 Clôture finale]] (fin de journée).', 'La clôture apparaît ici automatiquement.'] },
+            HDR_STEP
+        ], tips: ['Une **journée** correspond à sa clôture finale (ou, à défaut, à la dernière intermédiaire).'], faq: HDR_FAQ
+    },
+    {
+        id: 'chiffre', grp: 'Analyses', ic: '📈', t: 'Chiffre par journée & écarts',
+        sub: 'Les graphiques de la période.',
+        intro: 'Deux graphiques résument la période : le **chiffre par journée** et les **écarts de caisse**.',
+        zones: [
+            ['📈', 'Chiffre par journée', 'Chaque journée selon sa clôture : clôture finale, seulement intermédiaire, ou ventes sans clôture. Affichage en courbe, histogramme ou tableau ; [[⤢ Agrandir]].'],
+            ['⚖️', 'Écarts de caisse', 'Espèces + carte, sur les clôtures finales comptées : juste, ≤ 2 €, > 2 € ; ▲ excédent, ▼ manque.']
+        ],
+        steps: [{ t: 'Repérer les jours à problème', s: ['Choisissez la période.', 'Dans **⚖️ Écarts de caisse**, repérez les barres > 2 €.', 'Cliquez sur la journée (ou utilisez le calendrier) pour ouvrir la clôture et lire la note du caissier.'] }],
+        tips: ['Une journée « ventes sans clôture » signale un oubli de fin de poste.'], faq: []
+    },
+    {
+        id: 'calendrier', grp: 'Analyses', ic: '🗓️', t: 'Calendrier des clôtures',
+        sub: 'Chaque jour coloré selon sa caisse.',
+        intro: 'Le **calendrier** colore chaque jour du mois selon le résultat de sa clôture.',
+        zones: [['🎨', 'Légende', 'Caisse juste, petit écart, gros écart, non comptée, intermédiaire seule.']],
+        steps: [{ t: 'Voir les clôtures d’un jour', s: ['Touchez un jour du calendrier.', 'La liste « Détail des clôtures » se limite à ce jour (le filtre 📅 apparaît ; [[✕]] pour l’enlever).'] }],
+        tips: [], faq: []
+    },
+    {
+        id: 'caissiers', grp: 'Analyses', ic: '👥', t: 'Par caissier',
+        sub: 'Résultats des clôtures finales par personne.',
+        intro: 'Le bloc **Par caissier** compare les clôtures finales de chaque caissier sur la période (nombre, chiffre, écarts).',
+        zones: [], steps: [{ t: 'Suivre un caissier', s: ['Consultez son nombre de clôtures et ses écarts cumulés.', 'Pour ne voir que ses clôtures, choisissez-le dans le filtre [[👤 Tous les caissiers]].'] }],
+        tips: [], faq: []
+    },
+    {
+        id: 'detail', grp: 'Clôtures', ic: '📋', t: 'Détail des clôtures',
+        sub: 'Chaque clôture : comptage, écarts, note, impression.',
+        intro: 'La liste **Détail des clôtures** affiche les clôtures filtrées, en [[▦ Cartes]] ou en [[☰ Tableau]] ([[Afficher plus]] en bas).',
+        zones: [['🧾', 'Une clôture', 'Date, caissier, type (finale / intermédiaire), chiffre, espèces attendues et comptées, carte, écarts, note.'], ['🛠️', 'Actions', 'Ouvrir le détail, [[✏️ Modifier la clôture]], imprimer le ticket de clôture, supprimer.']],
+        steps: [
+            { t: 'Consulter et réimprimer une clôture', s: ['Cliquez sur la clôture.', 'Lisez le détail du comptage et des écarts.', 'Cliquez sur l’imprimante pour imprimer le ticket de clôture (choix du format de ticket).'] },
+            { t: 'Corriger une clôture', s: ['Ouvrez la clôture puis [[✏️ Modifier]].', 'Corrigez le comptage ou la note.', 'Cliquez sur [[💾 Enregistrer]].'] }
+        ], tips: [], faq: []
+    }
+    ], anchors: [
+        { g: 'general', sel: '.cp-title', mode: 'before' },
+        { g: 'chiffre', sel: 'div,span,h2,h3,h4', re: '^📈 Chiffre par journée$' },
+        { g: 'chiffre', sel: 'div,span,h2,h3,h4', re: '^⚖️ Écarts de caisse$' },
+        { g: 'calendrier', sel: 'div,span,h2,h3,h4', re: '^🗓️ Calendrier des clôtures$' },
+        { g: 'caissiers', sel: 'div,span,h2,h3,h4', re: '^👥 Par caissier$' },
+        { g: 'detail', sel: 'div,span,h2,h3,h4', re: '^📋 Détail des clôtures$' }
+    ] };
+    /* ═══ Moteur commun des guides « i » (satellites COVO Pro) ═══
+       APP = { key, name, guides:[{id,grp,ic,t,sub,intro,zones,steps,tips,faq,go}], anchors:[{g,sel,re,mode}] } */
+    if (window._tgInstalled) return; window._tgInstalled = true;
+    var G = APP.guides, BY = {}; G.forEach(function (g) { BY[g.id] = g; });
+    function $(id) { return document.getElementById(id); }
+    function esc(t) { return String(t == null ? '' : t).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+    function fmt(t) { return esc(t).replace(/\[\[(.+?)\]\]/g, '<span class="tg-k">$1</span>').replace(/\*\*(.+?)\*\*/g, '<b>$1</b>'); }
+    function plain(g) {
+        var a = [g.t, g.sub, g.intro];
+        (g.zones || []).forEach(function (z) { a.push(z[1], z[2]); });
+        (g.steps || []).forEach(function (s) { a.push(s.t); a = a.concat(s.s); });
+        a = a.concat(g.tips || []); (g.faq || []).forEach(function (f) { a.push(f[0], f[1]); });
+        return a.join(' ').replace(/\[\[|\]\]|\*\*/g, '');
+    }
+    function norm(s) { return String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, ''); }
+
+    var CSS = [
+        '.tg-i{position:absolute;top:4px;left:5px;width:18px;height:18px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font:italic 800 11.5px/1 Georgia,"Times New Roman",serif;background:rgba(59,130,246,.18);color:#2563eb;border:1.5px solid rgba(59,130,246,.75);box-shadow:0 1px 4px rgba(0,0,0,.15);cursor:help;pointer-events:auto!important;z-index:3;transition:transform .15s,background .15s;user-select:none;text-transform:none;letter-spacing:0;flex-shrink:0;}',
+        'body.dark-mode .tg-i,[data-theme=dark] .tg-i{color:#93c5fd;border-color:rgba(147,197,253,.8);background:rgba(59,130,246,.25);}',
+        '.tg-i:hover,.tg-i:focus{transform:scale(1.18);background:#2563eb;color:#fff;outline:none;}',
+        '.tg-i.inl{position:relative;top:auto;left:auto;margin:0 0 0 7px;vertical-align:middle;width:17px;height:17px;font-size:10.5px;}',
+        '.tg-host{position:relative;}',
+        '#tg-ov{position:fixed;inset:0;z-index:2147483000;background:rgba(8,12,24,.62);backdrop-filter:blur(6px);display:flex;align-items:center;justify-content:center;padding:14px;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;--tb:#fff;--tf:#1f2937;--tm:#64748b;--tl:#e5e7eb;--ts:#f8fafc;--tz:#334155;}',
+        '#tg-ov.dk{--tb:#111827;--tf:#e5e7eb;--tm:#9ca3af;--tl:#374151;--ts:#0b1220;--tz:#cbd5e1;}',
+        '#tg-box{width:min(1080px,100%);height:min(92vh,900px);background:var(--tb);color:var(--tf);border-radius:20px;box-shadow:0 30px 90px rgba(0,0,0,.45);display:grid;grid-template-rows:auto minmax(0,1fr);overflow:hidden;text-align:left;}',
+        '#tg-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 16px;background:linear-gradient(135deg,#1d4ed8,#0f766e);color:#fff;}',
+        '#tg-head h2{margin:0;font-size:1.02rem;font-weight:900;flex:1;min-width:160px;color:#fff;}',
+        '#tg-head input{flex:0 1 280px;min-width:150px;padding:8px 11px;border-radius:10px;border:none;font-size:.84rem;background:rgba(255,255,255,.95);color:#1f2937;}',
+        '#tg-head button{border:1.5px solid rgba(255,255,255,.45);background:rgba(255,255,255,.14);color:#fff;border-radius:10px;padding:7px 11px;font-weight:800;font-size:.78rem;cursor:pointer;font-family:inherit;}',
+        '#tg-head button:hover{background:rgba(255,255,255,.28);}',
+        '#tg-body{display:grid;grid-template-columns:260px minmax(0,1fr);min-height:0;}',
+        '#tg-side{border-right:1px solid var(--tl);overflow:auto;padding:10px 8px;background:var(--ts);}',
+        '#tg-side .gp{font-size:.64rem;font-weight:900;letter-spacing:.06em;text-transform:uppercase;color:var(--tm);margin:10px 8px 4px;}',
+        '#tg-side button{display:flex;align-items:center;gap:8px;width:100%;text-align:left;border:none;background:none;color:var(--tf);padding:7px 9px;border-radius:9px;font-size:.82rem;font-weight:700;cursor:pointer;font-family:inherit;}',
+        '#tg-side button:hover{background:rgba(59,130,246,.1);}',
+        '#tg-side button.on{background:#2563eb;color:#fff;}',
+        '#tg-side .nores{font-size:.78rem;color:var(--tm);padding:10px;}',
+        '#tg-sel{display:none;}',
+        '#tg-main{overflow:auto;padding:18px 22px 26px;color:var(--tf);}',
+        '#tg-main *{color:inherit;}',
+        '#tg-main .hero{display:flex;gap:14px;align-items:flex-start;margin-bottom:12px;}',
+        '#tg-main .hero .ic{font-size:2rem;line-height:1;width:54px;height:54px;border-radius:15px;display:flex;align-items:center;justify-content:center;background:rgba(37,99,235,.12);flex-shrink:0;}',
+        '#tg-main h3{margin:0;font-size:1.25rem;font-weight:900;}',
+        '#tg-main .sub{margin-top:3px;font-size:.84rem;font-weight:700;color:var(--tm);}',
+        '#tg-main .intro{font-size:.9rem;line-height:1.6;background:rgba(37,99,235,.08);border-left:4px solid #2563eb;border-radius:10px;padding:11px 14px;margin:6px 0 16px;}',
+        '#tg-main h4{margin:20px 0 9px;font-size:.98rem;font-weight:900;display:flex;align-items:center;gap:8px;}',
+        '#tg-main .zones{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:9px;}',
+        '#tg-main .zone{border:1px solid var(--tl);border-radius:12px;padding:10px 12px;background:var(--ts);}',
+        '#tg-main .zone b.zt{display:block;font-size:.86rem;margin-bottom:4px;}',
+        '#tg-main .zone p{margin:0;font-size:.8rem;line-height:1.5;color:var(--tz);}',
+        '#tg-main details.st{border:1px solid var(--tl);border-radius:12px;margin-bottom:8px;background:var(--tb);overflow:hidden;}',
+        '#tg-main details.st summary{cursor:pointer;padding:11px 14px;font-weight:900;font-size:.9rem;list-style:none;display:flex;align-items:center;gap:9px;}',
+        '#tg-main details.st summary::-webkit-details-marker{display:none;}',
+        '#tg-main details.st summary .n{flex-shrink:0;width:24px;height:24px;border-radius:50%;background:#2563eb;color:#fff;font-size:.74rem;display:flex;align-items:center;justify-content:center;}',
+        '#tg-main details.st summary .ch{margin-left:auto;transition:transform .2s;color:var(--tm);}',
+        '#tg-main details.st[open] summary .ch{transform:rotate(90deg);}',
+        '#tg-main details.st ol{margin:0;padding:2px 18px 14px 50px;}',
+        '#tg-main details.st li{font-size:.86rem;line-height:1.6;margin:5px 0;}',
+        '#tg-main ul.tips{margin:0;padding-left:20px;}#tg-main ul.tips li{font-size:.86rem;line-height:1.6;margin:4px 0;}',
+        '#tg-main .faq{border-bottom:1px dashed var(--tl);padding:8px 2px;}#tg-main .faq b{display:block;font-size:.87rem;}#tg-main .faq p{margin:3px 0 0;font-size:.84rem;line-height:1.55;color:var(--tz);}',
+        '#tg-main .nav{display:flex;justify-content:space-between;gap:8px;margin-top:22px;flex-wrap:wrap;}',
+        '#tg-main .nav button{border:1.5px solid var(--tl);background:var(--tb);color:var(--tf);border-radius:10px;padding:8px 12px;font-weight:800;font-size:.8rem;cursor:pointer;font-family:inherit;}',
+        '#tg-ov .tg-k{display:inline-block;padding:0 6px;margin:0 1px;border-radius:6px;background:rgba(100,116,139,.15);border:1px solid rgba(100,116,139,.3);font-weight:800;font-size:.92em;white-space:nowrap;}',
+        '#tg-main mark{background:#fde047;color:#111;border-radius:3px;padding:0 1px;}',
+        '@media (max-width:760px){#tg-body{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr);}#tg-side{display:none;}#tg-sel{display:block;width:calc(100% - 20px);margin:8px 10px 0;padding:8px;border-radius:10px;border:1.5px solid var(--tl);background:var(--tb);color:var(--tf);font-weight:800;}#tg-main{padding:12px 14px 22px;}#tg-head input{flex:1 1 100%;order:3;}#tg-ov{padding:0;}#tg-box{height:100vh;height:100dvh;border-radius:0;}#tg-ov .tg-k{white-space:normal;}}',
+        '@media print{body > *:not(#tg-ov){display:none!important;}#tg-ov{position:static;background:none;padding:0;backdrop-filter:none;}#tg-box{height:auto;box-shadow:none;display:block;}#tg-head,#tg-side,#tg-sel,#tg-main .nav{display:none!important;}#tg-body{display:block;}#tg-main{overflow:visible;}#tg-main details.st{break-inside:avoid;}}'
+    ].join('\n');
+    function ensureCss() { if (!$('tg-css')) { var s = document.createElement('style'); s.id = 'tg-css'; s.textContent = CSS; (document.head || document.documentElement).appendChild(s); } }
+
+    function isDark() {
+        try {
+            var b = document.body, h = document.documentElement;
+            if (b.classList.contains('dark-mode') || h.getAttribute('data-theme') === 'dark' || b.getAttribute('data-theme') === 'dark') return true;
+            if (h.getAttribute('data-theme') === 'light' || b.getAttribute('data-theme') === 'light') return false;
+            var c = getComputedStyle(b).backgroundColor.match(/\d+(\.\d+)?/g);
+            if (c && (c.length < 4 || +c[3] > 0)) return (0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]) < 110;
+            return window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches;
+        } catch (e) { return false; }
+    }
+
+    var cur = G[0].id, q = '';
+    function sideList() {
+        var nq = norm(q), groups = {}, order = [];
+        G.forEach(function (g) {
+            if (nq && norm(plain(g)).indexOf(nq) < 0) return;
+            if (!groups[g.grp]) { groups[g.grp] = []; order.push(g.grp); }
+            groups[g.grp].push(g);
+        });
+        if (!order.length) return '<div class="nores">Aucun guide ne contient « ' + esc(q) + ' ».</div>';
+        return order.map(function (gp) {
+            return '<div class="gp">' + esc(gp) + '</div>' + groups[gp].map(function (g) { return '<button type="button" data-g="' + g.id + '" class="' + (g.id === cur ? 'on' : '') + '"><span>' + g.ic + '</span><span>' + esc(g.t) + '</span></button>'; }).join('');
+        }).join('');
+    }
+    function highlight(root) {
+        var nq = q.trim(); if (nq.length < 2) return;
+        var re = new RegExp('(' + nq.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+        var w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null), nodes = [], n;
+        while ((n = w.nextNode())) { re.lastIndex = 0; if (re.test(n.nodeValue)) nodes.push(n); }
+        nodes.forEach(function (t) {
+            var span = document.createElement('span'); re.lastIndex = 0; span.innerHTML = esc(t.nodeValue).replace(re, '<mark>$1</mark>');
+            t.parentNode.replaceChild(span, t);
+            var d = span.closest('details'); if (d) d.open = true;
+        });
+        var m = root.querySelector('mark'); if (m) m.scrollIntoView({ block: 'center' });
+    }
+    function mainHtml(g) {
+        var idx = G.indexOf(g), prev = G[idx - 1], next = G[idx + 1];
+        var h = '<div class="hero"><div class="ic">' + g.ic + '</div><div><h3>' + esc(g.t) + '</h3><div class="sub">' + fmt(g.sub) + '</div></div></div><div class="intro">' + fmt(g.intro) + '</div>';
+        if (g.zones && g.zones.length) h += '<h4>🧩 Ce que vous trouvez ici</h4><div class="zones">' + g.zones.map(function (z) { return '<div class="zone"><b class="zt">' + z[0] + ' ' + fmt(z[1]) + '</b><p>' + fmt(z[2]) + '</p></div>'; }).join('') + '</div>';
+        if (g.steps && g.steps.length) h += '<h4>🪜 Comment l’utiliser — pas à pas</h4>' + g.steps.map(function (s, i) {
+            return '<details class="st"' + (i === 0 ? ' open' : '') + '><summary><span class="n">' + (i + 1) + '</span>' + fmt(s.t) + '<span class="ch">›</span></summary><ol>' + s.s.map(function (x) { return '<li>' + fmt(x) + '</li>'; }).join('') + '</ol></details>';
+        }).join('');
+        if (g.tips && g.tips.length) h += '<h4>💡 Astuces</h4><ul class="tips">' + g.tips.map(function (x) { return '<li>' + fmt(x) + '</li>'; }).join('') + '</ul>';
+        if (g.faq && g.faq.length) h += '<h4>❓ Questions fréquentes</h4>' + g.faq.map(function (f) { return '<div class="faq"><b>' + fmt(f[0]) + '</b><p>' + fmt(f[1]) + '</p></div>'; }).join('');
+        h += '<div class="nav">' + (prev ? '<button type="button" data-g="' + prev.id + '">‹ ' + prev.ic + ' ' + esc(prev.t) + '</button>' : '<span></span>') + (next ? '<button type="button" data-g="' + next.id + '">' + next.ic + ' ' + esc(next.t) + ' ›</button>' : '') + '</div>';
+        return h;
+    }
+    function render() {
+        var g = BY[cur] || G[0];
+        $('tg-side').innerHTML = sideList();
+        $('tg-sel').innerHTML = G.map(function (x) { return '<option value="' + x.id + '"' + (x.id === cur ? ' selected' : '') + '>' + x.ic + ' ' + esc(x.t) + '</option>'; }).join('');
+        var m = $('tg-main'); m.innerHTML = mainHtml(g); m.scrollTop = 0; highlight(m);
+        $('tg-go').style.display = g.go ? '' : 'none';
+        $('tg-title').textContent = 'ℹ️ ' + APP.name + ' — ' + g.t;
+    }
+    function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); e.preventDefault(); close(); } }
+    function close() { var ov = $('tg-ov'); if (ov) ov.style.display = 'none'; document.removeEventListener('keydown', onKey, true); }
+    function open(id) {
+        ensureCss();
+        cur = BY[id] ? id : G[0].id;
+        var ov = $('tg-ov');
+        if (!ov) {
+            ov = document.createElement('div'); ov.id = 'tg-ov'; ov.setAttribute('role', 'dialog'); ov.setAttribute('aria-modal', 'true');
+            ov.innerHTML = '<div id="tg-box"><div id="tg-head"><h2 id="tg-title">ℹ️ Guide</h2>'
+                + '<input id="tg-q" type="search" placeholder="🔎 Rechercher dans les guides…" autocomplete="off">'
+                + '<button type="button" id="tg-go" title="Afficher l’écran expliqué">↗ Y aller</button>'
+                + '<button type="button" id="tg-pr" title="Imprimer ce guide">🖨️ Imprimer</button>'
+                + '<button type="button" id="tg-x" title="Fermer (Échap)">✕</button></div>'
+                + '<div id="tg-body"><nav id="tg-side" aria-label="Guides"></nav><div style="display:flex;flex-direction:column;min-height:0;"><select id="tg-sel" aria-label="Choisir un guide"></select><div id="tg-main"></div></div></div></div>';
+            document.body.appendChild(ov);
+            ov.addEventListener('click', function (e) {
+                if (e.target === ov) { close(); return; }
+                var b = e.target.closest('[data-g]'); if (b) { cur = b.getAttribute('data-g'); render(); return; }
+                if (e.target.closest('#tg-x')) close();
+                else if (e.target.closest('#tg-pr')) { document.querySelectorAll('#tg-main details').forEach(function (d) { d.open = true; }); window.print(); }
+                else if (e.target.closest('#tg-go')) { var g = BY[cur]; close(); try { if (g && g.go) g.go(); } catch (er) {} }
+            });
+            $('tg-sel').addEventListener('change', function () { cur = this.value; render(); });
+            var qt = null;
+            $('tg-q').addEventListener('input', function () {
+                var v = this.value; clearTimeout(qt);
+                qt = setTimeout(function () {
+                    q = v;
+                    if (q && norm(plain(BY[cur])).indexOf(norm(q)) < 0) { var f = G.filter(function (g) { return norm(plain(g)).indexOf(norm(q)) >= 0; })[0]; if (f) cur = f.id; }
+                    render();
+                }, 220);
+            });
+        }
+        ov.classList.toggle('dk', isDark());
+        ov.style.display = 'flex';
+        q = ''; $('tg-q').value = '';
+        render();
+        document.addEventListener('keydown', onKey, true);
+        setTimeout(function () { var x = $('tg-x'); if (x) x.focus(); }, 30);
+    }
+    window.covoTabGuide = open;
+
+    function badge(id, inline) {
+        var s = document.createElement('span');
+        s.className = 'tg-i' + (inline ? ' inl' : ''); s.textContent = 'i';
+        s.setAttribute('role', 'button'); s.setAttribute('tabindex', '0'); s.setAttribute('data-tg', id);
+        s.title = 'Guide : ' + BY[id].t + ' — ce que contient cet écran et comment l’utiliser';
+        s.setAttribute('aria-label', s.title);
+        return s;
+    }
+    function ownText(el) { var t = ''; for (var n = el.firstChild; n; n = n.nextSibling) if (n.nodeType === 3) t += n.nodeValue; return t.replace(/\s+/g, ' ').trim(); }
+    function inject() {
+        ensureCss();
+        APP.anchors.forEach(function (a) {
+            if (!BY[a.g]) return;
+            var list = Array.prototype.slice.call(document.querySelectorAll(a.sel));
+            if (a.re) { var re = new RegExp(a.re, 'i'); list = list.filter(function (el) { return re.test(a.full ? (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim() : ownText(el)); }); }
+            if (a.first) list = list.slice(0, 1);
+            list.forEach(function (el) {
+                if (el.querySelector(':scope > .tg-i[data-tg="' + a.g + '"]')) return;
+                if (a.mode === 'corner') { if (getComputedStyle(el).position === 'static') el.classList.add('tg-host'); el.appendChild(badge(a.g, false)); }
+                else if (a.mode === 'before' && el.querySelector(':scope > small')) el.insertBefore(badge(a.g, true), el.querySelector(':scope > small'));
+                else el.appendChild(badge(a.g, true));
+            });
+        });
+    }
+    function onBadge(e) {
+        var s = e.target && e.target.closest && e.target.closest('.tg-i'); if (!s) return;
+        e.preventDefault(); e.stopPropagation(); if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+        if (e.type === 'click' || (e.type === 'keydown' && (e.key === 'Enter' || e.key === ' '))) open(s.getAttribute('data-tg'));
+    }
+    document.addEventListener('click', onBadge, true);
+    document.addEventListener('keydown', function (e) { if (e.target && e.target.classList && e.target.classList.contains('tg-i')) onBadge(e); }, true);
+    ['mousedown', 'pointerdown', 'touchstart', 'dblclick'].forEach(function (t) { document.addEventListener(t, function (e) { if (e.target && e.target.closest && e.target.closest('.tg-i')) e.stopPropagation(); }, true); });
+
+    var iT = null;
+    function boot() {
+        inject();
+        new MutationObserver(function () { if (iT) return; iT = setTimeout(function () { iT = null; inject(); }, 300); }).observe(document.body, { childList: true, subtree: true });
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+})();
+</script>
 </body>
 </html>
